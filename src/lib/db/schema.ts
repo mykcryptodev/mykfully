@@ -68,7 +68,7 @@ export const mentionCache = pgTable(
   (t) => [uniqueIndex("mention_cache_owner_user").on(t.ownerId, t.xUserId)],
 );
 
-export type CreditKind = "signup" | "grant" | "revoke" | "spend" | "refund";
+export type CreditKind = "signup" | "grant" | "revoke" | "spend" | "refund" | "purchase";
 
 /** Append-only credit history. `balance_after` is the user's balance after this row was applied. */
 export const creditLedger = pgTable(
@@ -82,7 +82,7 @@ export const creditLedger = pgTable(
     kind: text("kind").$type<CreditKind>().notNull(),
     reason: text("reason"),
     actorId: text("actor_id"), // admin who granted/revoked
-    ref: text("ref"), // draft id / endpoint
+    ref: text("ref"), // draft id / endpoint / purchase tx hash
     unmetered: boolean("unmetered").default(false).notNull(), // admin spend (logged, not charged)
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -98,4 +98,37 @@ export const rateLimits = pgTable(
     count: integer("count").default(0).notNull(),
   },
   (t) => [primaryKey({ columns: [t.key, t.windowStart] })],
+);
+
+export type PurchaseStatus = "pending" | "settled" | "failed";
+
+/**
+ * Credits bought with USDC via x402 (optional feature, see src/lib/payments). One row per signed payment
+ * authorization. `payer`, `nonce`, `asset`, `pay_to` and `tx_hash` are stored lowercase.
+ * UNIQUE(network, payer, nonce) blocks replays of an authorization; UNIQUE(tx_hash) blocks double credit.
+ */
+export const creditPurchases = pgTable(
+  "credit_purchases",
+  {
+    id: text("id").primaryKey(), // uuid
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    packId: text("pack_id").notNull(),
+    credits: integer("credits").notNull(),
+    amountAtomic: text("amount_atomic").notNull(), // USDC atomic units (6 decimals)
+    network: text("network").notNull(), // CAIP-2, e.g. "eip155:8453"
+    asset: text("asset").notNull(), // USDC contract
+    payTo: text("pay_to").notNull(), // recipient at the time of purchase
+    payer: text("payer").notNull(),
+    nonce: text("nonce").notNull(), // EIP-3009 authorization nonce (bytes32)
+    status: text("status").$type<PurchaseStatus>().default("pending").notNull(),
+    txHash: text("tx_hash"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    settledAt: timestamp("settled_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("credit_purchases_tx_hash_uq").on(t.txHash),
+    uniqueIndex("credit_purchases_auth_uq").on(t.network, t.payer, t.nonce),
+    index("credit_purchases_status_idx").on(t.status, t.createdAt),
+    index("credit_purchases_user_idx").on(t.userId, t.createdAt),
+  ],
 );

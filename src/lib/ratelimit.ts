@@ -10,6 +10,7 @@ export const LIMITS = {
   login: { max: 20, windowSec: 60 },
   callback: { max: 20, windowSec: 60 },
   admin: { max: 60, windowSec: 60 },
+  purchase: { max: 10, windowSec: 60 },
 } as const;
 
 /**

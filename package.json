@@ -10,17 +10,21 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "purchases:reconcile": "tsx scripts/reconcile-purchases.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.16",
     "@neondatabase/serverless": "^1.2.0",
+    "@x402/core": "2.30.0",
+    "@x402/evm": "2.30.0",
     "drizzle-orm": "^0.45.4",
     "jose": "^6.2.17",
     "next": "15.5.29",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "twitter-text": "^3.1.0",
+    "viem": "2.57.17",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -67,7 +67,7 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 | Module | Responsibility |
 |---|---|
 | `env.ts` | The central place for reading `process.env`, plus `intEnv`. A few files read it directly: `middleware.ts` (Edge), `db/index.ts` (`PGLITE_DIR`), `x/mock.ts` (`MOCK_X_FAIL_AFTER`) and `next.config.ts`. Getters are lazy, so a missing var throws on first use, not at import. `mockX` is forced off when `VERCEL_ENV=production`. `allowMockLogin` exists for `pnpm start` smoke tests. |
-| `db/schema.ts` | Drizzle tables: `users`, `x_tokens`, `drafts` (posts are `jsonb` `ThreadPost[]`), `mention_cache`, `credit_ledger`, `rate_limits`. |
+| `db/schema.ts` | Drizzle tables: `users`, `x_tokens`, `drafts` (posts are `jsonb` `ThreadPost[]`), `mention_cache`, `credit_ledger`, `rate_limits`, `credit_purchases` (x402). |
 | `db/index.ts` | `getDb()`: Neon when `DATABASE_URL` is set, otherwise PGlite in `PGLITE_DIR` (default `./.data/pglite`), migrated on startup. The promise is cached on `globalThis.__mykDb`, so a failed init stays failed until the process restarts. |
 | `session.ts` | `getSession` / `requireUserId` / `setSession` / `clearSession` / `revokeSessions`. Sessions are HS256 JWTs with a `ver` claim that must match `users.session_version`. The cookie is `__Host-myk_session` in prod and `myk_session` in dev. They last 14 days. |
 | `crypto.ts` | AES-256-GCM `encrypt(plaintext, aad)` / `decrypt`. Format `v2:` uses AAD = userId; `v1:` is legacy and read-only. |
@@ -82,6 +82,7 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 | `http.ts` | `assertSameOrigin`, `assertSameSiteFetch`, `assertJson` and `clientIp`. |
 | `drafts.ts` | Zod input schemas, plus user-scoped CRUD and the `assertReadyToPublish` checks (empty posts, lengths, credits). `serializeDraft` converts dates to ISO strings. |
 | `publisher.ts` | `claimDueDrafts`, `publishDraft`, `markPublished`, `markFailed`, `runDuePublishing` and `publicErrorText`. |
+| `payments/` | **Optional x402 credit purchases** (USDC on Base). `config.ts` validates `PAY_TO_ADDRESS` / `X402_NETWORK` / CDP keys; the feature is off unless they are valid. `x402.ts` builds the resource server and server-side `PaymentRequirements` (facilitator injectable for tests). `cdpJwt.ts` signs CDP API-key JWTs with jose. `purchases.ts` claims a pending row on (network, payer, nonce), then credits in one CTE with a unique `tx_hash`. `reconcile.ts` + `pnpm purchases:reconcile` settle stuck pending rows from chain state. |
 | `text.ts` | Pure `twitter-text` helpers, safe on both client and server: `countPost`, `overflowIndex`, `tokenize`, `splitIntoThread`, `extractMentions`, `hasUrl`. Long posts (25k) are allowed for `premium` / `blue`. |
 
 ## 4. Setup and commands
@@ -98,7 +99,7 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 | `pnpm dev` | Runs the Next dev server. |
 | `pnpm typecheck` | Runs `tsc --noEmit`. |
 | `pnpm lint` | Runs ESLint (`next/core-web-vitals` and `next/typescript`). |
-| `pnpm test` | Runs `vitest run`: 8 files and 70 tests, about 10 seconds. |
+| `pnpm test` | Runs `vitest run`: 10 files and about 94 tests, about 10 seconds. |
 | `pnpm build` | Runs `node scripts/migrate.mjs && next build`. **Unset `DATABASE_URL` locally** unless you really mean to migrate that database. |
 | `pnpm db:generate` | Runs `drizzle-kit generate` from `schema.ts` into `drizzle/`. No DB is needed. |
 | `pnpm db:migrate` | Runs `drizzle-kit migrate` against `DATABASE_URL`. Rarely needed, since the build and startup already migrate. |
@@ -229,7 +230,13 @@ Breaking any of these causes double posts, lost money, account takeover or data 
 12. **CSP lives in `next.config.ts`.** It allows images from `pbs.twimg.com`, `abs.twimg.com` and `unavatar.io`, and `form-action` to `x.com`. `connect-src` is `'self'`. Update it whenever you add an external host (images, fetches, fonts) or the page breaks in prod. Don't loosen `frame-ancestors`, and don't add `unsafe-eval` for production.
 13. **Rate limits:** login and callback are limited per IP via `clientIp`; search, publish, draftCreate and admin are limited per user. Add `limitNamed` to any new costly or abusable route.
 14. **Admin endpoints** use `requireAdmin(db)`, which returns **404** to non-admins so the surface stays hidden.
-15. **Never commit secrets or `.env*` files.** Only `.env.example` is tracked, and it must hold no real values. Never put real tokens, X ids of real users, or the instance URL in code, tests or docs.
+15. **x402 purchases** (`POST /api/credits/purchase`):
+    - Never credit before the facilitator reports a successful settlement on the expected network with a tx hash.
+    - Build requirements server-side from the pack id; never trust client amount, `payTo`, asset or network.
+    - `UNIQUE(network, payer, nonce)` and `UNIQUE(tx_hash)` prevent replays and double credits.
+    - The 402 challenge is a documented exception to `errorResponse`. The client calls it with raw `fetch`, because `apiFetch` treats every 402 as insufficient credits.
+    - Wallet code (viem, `@x402/*`) must stay in lazy chunks (`next/dynamic` / dynamic `import()`), so users who never pay download none of it.
+16. **Never commit secrets or `.env*` files.** Only `.env.example` is tracked, and it must hold no real values. Never put real tokens, X ids of real users, or the instance URL in code, tests or docs.
 
 ## 8. Recipes
 

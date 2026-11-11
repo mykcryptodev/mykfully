@@ -5,6 +5,7 @@ import type { XUser } from "../lib/api";
 import { Avatar } from "../ui/Avatar";
 import { VerifiedBadge } from "../ui/VerifiedBadge";
 import { Spinner } from "../ui/Spinner";
+import { useApp } from "../app/AppProvider";
 
 export function MentionMenu({
   id,
@@ -29,6 +30,7 @@ export function MentionMenu({
   onHover: (i: number) => void;
   onPick: (u: XUser) => void;
 }) {
+  const { buyCredits } = useApp();
   const listRef = useRef<HTMLUListElement>(null);
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`)?.scrollIntoView({ block: "nearest" });
@@ -79,8 +81,13 @@ export function MentionMenu({
         )}
       </ul>
       {creditsExhausted && (
-        <div className="border-t border-line px-4 py-2 text-[12.5px] text-muted">
-          Out of credits — showing recent mentions only
+        <div className="flex items-center justify-between gap-2 border-t border-line px-4 py-2 text-[12.5px] text-muted">
+          <span>Out of credits — showing recent mentions only</span>
+          {buyCredits && (
+            <button type="button" onClick={buyCredits} className="shrink-0 font-bold text-accent hover:underline">
+              Buy credits
+            </button>
+          )}
         </div>
       )}
       {users.length > 0 && loading && (

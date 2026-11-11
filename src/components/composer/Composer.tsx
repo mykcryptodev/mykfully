@@ -80,7 +80,7 @@ function usePersistentFlag(key: string, initial: boolean) {
 
 export function Composer({ routeId }: { routeId: string | null }) {
   const router = useRouter();
-  const { me, credits, refreshMe, upsertDraft, removeDraft, setTab, setSidebarOpen, toast } = useApp();
+  const { me, credits, buyCredits, refreshMe, upsertDraft, removeDraft, setTab, setSidebarOpen, toast } = useApp();
   const tz = me?.timezone ?? "UTC";
   const max = maxLengthFor(me?.verifiedType);
 
@@ -680,13 +680,14 @@ export function Composer({ routeId }: { routeId: string | null }) {
             {shortCredits && !readOnly && !problems && (
               <Banner tone="danger" icon={<IconAlert size={18} />}>
                 <span className="flex-1">{shortCredits}</span>
+                {buyCredits && <BuyCreditsButton onClick={buyCredits} />}
               </Banner>
             )}
             {status === "failed" && (
               <Banner tone="danger" icon={<IconAlert size={18} />}>
                 <div className="flex-1">
                   <div className="font-bold">Publishing failed{draft && draft.attempts > 0 ? ` after ${draft.attempts} attempt${draft.attempts > 1 ? "s" : ""}` : ""}</div>
-                  {draft?.lastError && <FailedReason error={draft.lastError} balance={isAdmin ? null : balance} />}
+                  {draft?.lastError && <FailedReason error={draft.lastError} balance={isAdmin ? null : balance} onBuy={isAdmin ? null : buyCredits} />}
                   <div className="mt-1 text-[13px] text-muted">
                     Fix the posts if needed, then publish now or reschedule. Posts already on X are kept.
                   </div>
@@ -841,7 +842,18 @@ const FAILED_TEXT: Record<string, string> = {
   rate_limited: "X rate-limited the request. Try again in a few minutes.",
 };
 
-function FailedReason({ error, balance }: { error: string; balance: number | null }) {
+function BuyCreditsButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="shrink-0 rounded-full bg-danger px-3 py-0.5 text-[12.5px] font-bold text-white hover:opacity-90"
+    >
+      Buy credits
+    </button>
+  );
+}
+
+function FailedReason({ error, balance, onBuy }: { error: string; balance: number | null; onBuy: (() => void) | null }) {
   const { code, message } = parseLastError(error);
   const friendly = code ? FAILED_TEXT[code] : undefined;
   return (
@@ -851,6 +863,11 @@ function FailedReason({ error, balance }: { error: string; balance: number | nul
         <span className="text-muted">
           {" "}
           {balance != null ? `You have ${formatCredits(balance)} credits. ` : ""}Ask the admin for more, then retry.
+        </span>
+      )}
+      {code === "insufficient_credits" && onBuy && (
+        <span className="ml-2 inline-flex">
+          <BuyCreditsButton onClick={onBuy} />
         </span>
       )}
       {code === "reconnect_required" && (

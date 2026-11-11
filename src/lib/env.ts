@@ -70,6 +70,27 @@ export const env = {
       .filter(Boolean);
     return ids.length ? new Set(ids) : null;
   },
+  // --- Optional x402 credit purchases (raw values; validated in src/lib/payments/config.ts) ---
+  /** Address that receives USDC for credit purchases. Unset = purchases are off. */
+  get payToAddress() {
+    return (process.env.PAY_TO_ADDRESS ?? "").trim();
+  },
+  /** "base" or "base-sepolia". Anything else = purchases are off. */
+  get x402Network() {
+    return (process.env.X402_NETWORK ?? "").trim();
+  },
+  /** Coinbase Developer Platform API key (the CDP x402 facilitator); required for X402_NETWORK=base. */
+  get cdpApiKeyId() {
+    return (process.env.CDP_API_KEY_ID ?? "").trim();
+  },
+  get cdpApiKeySecret() {
+    // Multi-line PEM secrets are often stored with literal "\n".
+    return (process.env.CDP_API_KEY_SECRET ?? "").trim().replace(/\\n/g, "\n");
+  },
+  /** Optional JSON-RPC URL used only by scripts/reconcile-purchases.ts (defaults to the chain's public RPC). */
+  get x402RpcUrl() {
+    return (process.env.X402_RPC_URL ?? "").trim() || null;
+  },
 };
 
 function must(name: string): string {

@@ -46,7 +46,53 @@ Every user spends **credits** whenever mykfully calls a paid X API endpoint on t
   - `GLOBAL_DAILY_CREDIT_CAP` caps total non-admin spend per rolling 24 hours across the whole instance. It defaults to 20000 (about $20/day); set it to `0` to disable the cap.
   - `ALLOWED_X_USER_IDS` (optional, comma-separated X user ids) restricts who can sign in. Admins are always allowed. When unset, anyone with an X account can sign in.
   - Per-user rate limits apply to search, publishing, draft creation and login.
-- **Ledger:** every charge, refund and grant is recorded in an append-only ledger.
+- **Ledger:** every charge, refund, grant and purchase is recorded in an append-only ledger.
+- **Buying credits (optional):** an instance can let users top up with USDC; see [below](#optional-sell-credits-for-usdc-via-x402).
+
+## Optional: sell credits for USDC via x402
+
+X's API doesn't accept [x402](https://x402.org) payments, so this doesn't change how posts are paid for. Instead, an instance can **sell its own credits**: users top up their balance by paying USDC on Base from a browser wallet. It is **off by default** and adds nothing to the page for instances (or users) that never use it: the wallet code is only downloaded when someone presses "Pay with wallet".
+
+| Pack | Price | Credits |
+|---|---|---|
+| `p1` | $1 USDC | 1,000 |
+| `p5` | $5 USDC | 5,000 |
+| `p20` | $20 USDC | 20,000 |
+
+**How it works:** the user picks a pack and signs a USDC transfer authorization (EIP-3009) in their wallet: no gas, no approval transaction. The server checks it against the price it set itself, has an x402 *facilitator* verify and settle it on-chain, and only then adds the credits. Each purchase is recorded in `credit_purchases` and as a `purchase` row in the ledger (with the transaction hash).
+
+**Env vars** (the feature is on only when all the required ones are valid):
+
+| Variable | Meaning |
+|---|---|
+| `PAY_TO_ADDRESS` | The address that receives the USDC. A mistyped (bad-checksum) address disables the feature. |
+| `X402_NETWORK` | `base-sepolia` (testnet) or `base` (mainnet). |
+| `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` | Required for `base` only: a [Coinbase Developer Platform](https://portal.cdp.coinbase.com) API key for the CDP facilitator. Without them, mainnet purchases stay off. |
+| `X402_RPC_URL` | Optional. RPC endpoint for the reconcile script (defaults to the chain's public RPC). |
+
+**Try it on testnet first:**
+
+1. Set `PAY_TO_ADDRESS=<an address you control>` and `X402_NETWORK=base-sepolia`. Testnet uses the free `https://x402.org/facilitator`, so no keys are needed.
+2. In your wallet (Coinbase Wallet, MetaMask, Rabby…), get Base Sepolia USDC from the [Circle faucet](https://faucet.circle.com). You don't need ETH: the facilitator pays the gas.
+3. Open the credits chip in the sidebar, choose **Buy credits**, pick a pack and confirm the signature request. The app asks the wallet to switch to Base Sepolia.
+
+**Going to mainnet:** set `X402_NETWORK=base` and the two CDP keys. Real USDC then moves to `PAY_TO_ADDRESS`. Check Coinbase's facilitator terms and pricing, and your own tax and legal obligations, before selling anything.
+
+**Things to know:**
+
+- **Refunds are manual.** Purchases are final in the app. To refund someone, send the USDC back from your wallet and revoke the credits on `/admin`.
+- **Unconfirmed payments.** If the server can't tell whether a payment settled (a facilitator timeout, for example), the user sees "submitted, don't pay again" and **no credits are added yet**. Run the reconcile script to resolve these. It checks the chain, credits purchases whose USDC transfer really happened, and marks expired ones as failed:
+
+  ```bash
+  DATABASE_URL=... X402_NETWORK=base pnpm purchases:reconcile            # add --dry-run to only report
+  pnpm purchases:reconcile --include-failed                              # also re-check failed purchases
+  pnpm purchases:reconcile --id <purchaseId> --tx <0xhash>               # check one purchase against a known transaction
+  ```
+
+  It is manual in v1 (not run by cron) and safe to run repeatedly. The public Base RPC is rate-limited and only serves small log ranges, so on mainnet set `X402_RPC_URL` to an endpoint from an RPC provider. A used authorization whose transaction can't be found, or doesn't pay you the exact amount, is reported as `needs_review` and never credited automatically.
+- **The daily cap is about spending, not buying.** `GLOBAL_DAILY_CREDIT_CAP` still limits how many credits all non-admins can *spend* per 24 hours, including purchased ones. Raise it (or set `0`) if paying users hit it.
+- **Wallets:** only injected browser wallets are supported (no WalletConnect), and only USDC on Base.
+- **Not yet tested with real funds.** The flow is covered by automated tests with a stub facilitator and was checked against the testnet facilitator up to verification; do a testnet purchase yourself before enabling mainnet.
 
 ## Quick start (local, no X account needed)
 
@@ -95,6 +141,7 @@ Run tests: `pnpm test`.
    - `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY` and `CRON_SECRET`
    - `ADMIN_X_USER_IDS` and `SIGNUP_CREDITS`
    - Optionally `GLOBAL_DAILY_CREDIT_CAP` and `ALLOWED_X_USER_IDS`
+   - Optionally the x402 variables, to [sell credits for USDC](#optional-sell-credits-for-usdc-via-x402)
    - Leave `MOCK_X` unset. It is ignored on production deployments anyway.
 4. Deploy. Migrations run automatically before `next build` (`scripts/migrate.mjs`).
 5. `vercel.json` registers a cron job that runs every minute on `/api/cron/publish`. Every-minute cron needs the Pro plan. On Hobby, point an external pinger (such as cron-job.org or a GitHub Action) at that URL with the `Authorization: Bearer $CRON_SECRET` header.

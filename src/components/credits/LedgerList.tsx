@@ -11,6 +11,7 @@ const KIND: Record<CreditKind, { label: string; Icon: typeof IconPlus; cls: stri
   revoke: { label: "Revoke", Icon: IconMinus, cls: "bg-danger/10 text-danger" },
   spend: { label: "Spend", Icon: IconSend, cls: "bg-hover text-muted" },
   refund: { label: "Refund", Icon: IconUndo, cls: "bg-success/12 text-success" },
+  purchase: { label: "Purchase", Icon: IconPlus, cls: "bg-success/12 text-success" },
 };
 
 function describe(e: LedgerEntry): string {

@@ -31,7 +31,7 @@ export type Me = {
   xUserId: string;
 };
 
-export type CreditKind = "signup" | "grant" | "revoke" | "spend" | "refund";
+export type CreditKind = "signup" | "grant" | "revoke" | "spend" | "refund" | "purchase";
 
 export type LedgerEntry = {
   id: string;
@@ -46,7 +46,17 @@ export type LedgerEntry = {
 
 export type CreditCosts = { post: number; postWithUrl: number; userRead: number };
 
-export type CreditsInfo = { balance: number; isAdmin: boolean; costs: CreditCosts; ledger: LedgerEntry[] };
+/** Optional "buy credits with USDC" (x402) feature, from GET /api/credits. `enabled: false` unless the instance configured it. */
+export type PurchaseInfo = {
+  enabled: boolean;
+  network: "base" | "base-sepolia" | null;
+  chainId: number | null;
+  payTo: string | null;
+  asset: string | null;
+  packs: { id: string; usd: number; credits: number }[];
+};
+
+export type CreditsInfo = { balance: number; isAdmin: boolean; costs: CreditCosts; ledger: LedgerEntry[]; purchase?: PurchaseInfo };
 
 export type AdminUser = {
   id: string;

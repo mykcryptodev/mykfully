@@ -11,7 +11,7 @@ import { LedgerList } from "./LedgerList";
 const MENTION_SEARCH_MAX_USERS = 8;
 
 export function CreditsChip() {
-  const { me, credits, refreshMe } = useApp();
+  const { me, credits, refreshMe, buyCredits } = useApp();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -116,7 +116,22 @@ export function CreditsChip() {
               !loading && <p className="py-4 text-center text-[13px] text-muted">History unavailable.</p>
             )}
           </div>
-          {!isAdmin && <p className="mt-2 text-[12px] text-faint">Need more? Ask the admin of this instance.</p>}
+          {!isAdmin && buyCredits && (
+            <button
+              onClick={() => {
+                setOpen(false);
+                buyCredits();
+              }}
+              className="mt-3 h-9 w-full rounded-full bg-accent text-[14px] font-bold text-white transition-colors hover:bg-accent-hover"
+            >
+              Buy credits
+            </button>
+          )}
+          {!isAdmin && (
+            <p className="mt-2 text-[12px] text-faint">
+              {buyCredits ? "Pay with USDC, or ask the admin of this instance." : "Need more? Ask the admin of this instance."}
+            </p>
+          )}
         </div>
       )}
     </div>

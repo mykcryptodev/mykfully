@@ -9,6 +9,7 @@ Stack: Next.js 15 App Router (TS, Tailwind v4), Drizzle ORM, Postgres (Neon in p
 | Auth + X client | `src/lib/crypto.ts`, `src/lib/session.ts`, `src/lib/x/{real,mock,index}.ts`, `src/app/api/auth/**`, `src/app/api/me/route.ts`, `src/app/api/mentions/**`, `src/middleware.ts`, `src/app/login/**` |
 | Drafts + scheduler | `src/app/api/drafts/**`, `src/app/api/cron/**`, `src/lib/publisher.ts`, `src/lib/drafts.ts`, `vercel.json`, `src/lib/__tests__/**` |
 | Credits + metering | `src/lib/credits.ts`, `src/lib/errors.ts`, `src/lib/http.ts`, `src/lib/ratelimit.ts` (core); `src/lib/x/metered.ts`, `src/app/api/credits/**`, `src/app/api/admin/**` |
+| Credit purchases (optional, x402) | `src/lib/payments/*`, `src/app/api/credits/purchase/**`, `scripts/reconcile-purchases.ts`, `src/components/credits/{BuyCreditsModal.tsx,payWithWallet.ts}` |
 | Composer UI | `src/app/(app)/**`, `src/app/layout.tsx`, `src/app/page.tsx`, `src/app/globals.css`, `src/components/**`, `src/lib/text.ts` |
 
 ## Shared function contracts
@@ -65,7 +66,16 @@ Errors are `{ error: string, code: string, ...extra }` (see `errorResponse`). Mu
   - No body. Rate limit `publish` (10/min).
   - The publish checks run **before** the draft is claimed.
   - On an X or credit failure, the draft is marked `failed`. The response is the `errorResponse` body plus `draft`, with the same status.
-- `GET  /api/credits` → `{ balance, isAdmin, costs: { post, postWithUrl, userRead }, ledger: LedgerEntry[] }` (last 50 rows, ISO dates).
+- `GET  /api/credits` → `{ balance, isAdmin, costs: { post, postWithUrl, userRead }, ledger: LedgerEntry[], purchase }` (last 50 rows, ISO dates).
+  - `purchase` = `{ enabled, network: "base" | "base-sepolia" | null, chainId, payTo, asset, packs: { id, usd, credits }[] }`. When the feature is off it is `{ enabled: false, …null, packs: [] }`. `payTo`, `asset` and `chainId` let the client pin what it signs.
+- `POST /api/credits/purchase` `{ packId }` (optional x402 feature; see "Credit purchases"). Runtime `nodejs`, `maxDuration` 30. Rate limit `purchase` (10/min).
+  - Feature off → **404**.
+  - No `PAYMENT-SIGNATURE` header → **402** with the x402 v2 challenge in the `PAYMENT-REQUIRED` header (base64 JSON `PaymentRequired`) and body `{ error, code: "payment_required" }`.
+  - Payment rejected (doesn't match the pack, fails verification, or settlement definitely failed) → **402** with a fresh challenge and `{ error, code: "payment_rejected", reason }`.
+  - Settled → **200** `{ balance, credits, txHash }` plus a `PAYMENT-RESPONSE` header.
+  - Outcome unknown → **202** `{ pending: true, purchaseId }`; nothing is credited.
+  - Authorization already seen → **409** `payment_replayed`. Transaction already credited to another purchase → **409** `payment_not_credited`. Facilitator unreachable before anything was submitted → **502** `facilitator_unavailable`.
+  - **This 402 is the one documented exception to `errorResponse`** (it carries the challenge header), and it does *not* mean `insufficient_credits`. The client therefore calls this route with a bare `fetch`, not `apiFetch`.
 - `GET  /api/cron/publish` (header `Authorization: Bearer $CRON_SECRET`; Vercel Cron sends this) publishes due drafts with each owner's metered client → `{ processed, results: { id, status, error? }[] }`, where `error` uses the `last_error` format.
 
 ### Admin API
@@ -78,7 +88,7 @@ For admins only (`ADMIN_X_USER_IDS`). Everyone else gets **404**, so the surface
   - A negative delta is a revoke, and the balance is clamped at 0.
   - Returns 404 for an unknown user.
 
-`LedgerEntry` = `{ id, delta, balanceAfter, kind: signup|grant|revoke|spend|refund, reason, ref, unmetered, createdAt }`. Admin ledger views also include `actorId`.
+`LedgerEntry` = `{ id, delta, balanceAfter, kind: signup|grant|revoke|spend|refund|purchase, reason, ref, unmetered, createdAt }`. Admin ledger views also include `actorId`.
 
 `Draft` = row of `drafts` table serialized with ISO dates.
 
@@ -113,6 +123,34 @@ For admins only (`ADMIN_X_USER_IDS`). Everyone else gets **404**, so the surface
   - Each unposted post satisfies `countPost(text, { verifiedType })`: 400 `post_too_long` with `{ index, weighted, max }`.
   - For non-admins, `balance >= estimateThreadCost(posts)` (unposted posts only), otherwise 402 `insufficient_credits` with `{ needed, balance }`.
   - Editing the posts of an already-scheduled draft re-checks lengths only.
+
+## Credit purchases (optional, x402)
+X does not support x402, so this sells the instance's **own** credits for USDC on Base. It never touches the posting path.
+
+- **Enabled only when configured** (`getPurchaseConfig()` in `src/lib/payments/config.ts`, the single source of truth):
+  - `PAY_TO_ADDRESS` is a valid non-zero address (mixed-case must pass EIP-55), and
+  - `X402_NETWORK` is `base` or `base-sepolia`, and
+  - for `base`, `CDP_API_KEY_ID` + `CDP_API_KEY_SECRET` are set (CDP facilitator). `base-sepolia` uses `https://x402.org/facilitator`.
+  - USDC addresses are hardcoded per network. `PACKS` = `p1` $1 → 1,000, `p5` $5 → 5,000, `p20` $20 → 20,000.
+- **Modules** (`src/lib/payments/`):
+  - `x402.ts`: lazily builds and initializes the `x402ResourceServer` (cached per config; a failed init isn't cached). `setFacilitatorClient()` injects a facilitator for tests. Builds `PaymentRequirements` per pack **server-side**, decodes and checks the client's payment, and classifies settle outcomes. The CDP facilitator is `HTTPFacilitatorClient` + `generateCdpJwt` (`src/lib/payments/cdpJwt.ts`, jose-based, same JWT format as the CDP SDK; mainnet only). `@x402/next` is not used.
+  - `purchases.ts`: `claimPending`, `creditPurchase`, `markFailed`, and `purchaseCredits` (the whole route flow).
+  - `reconcile.ts` + `scripts/reconcile-purchases.ts` (`pnpm purchases:reconcile`): manual reconciliation.
+- **Table `credit_purchases`:** `id, user_id, pack_id, credits, amount_atomic, network (CAIP-2), asset, pay_to, payer, nonce, status (pending|settled|failed), tx_hash, created_at, settled_at`. Addresses, nonces and hashes are stored lowercase. `UNIQUE(tx_hash)`, `UNIQUE(network, payer, nonce)`.
+- **Invariants:**
+  - **Never trust the client** for amount, payTo, asset or network. Only `packId` is read from the body. The facilitator always verifies and settles against the server-built requirements, never `payload.accepted`.
+  - The payment must be x402 v2, scheme `exact`, an EIP-3009 authorization whose `to`/`value` equal the pack's payTo/amount, valid for at most 5 minutes (`MAX_TIMEOUT_SECONDS`). Permit2 payloads are rejected.
+  - **Order:** check → facilitator verify → `claimPending` → facilitator settle → `creditPurchase`.
+  - `claimPending` is `INSERT … ON CONFLICT DO NOTHING`; a conflict is a replay and is rejected before settling.
+  - `creditPurchase` is **one CTE**: mark the row `settled` with the tx hash (only from `pending`, and only if no row already has that hash), add the credits, and insert a `purchase` ledger row (`ref` = tx hash, `clock_timestamp()`). It credits at most once per purchase and once per transaction; the unique index is the backstop for races.
+  - **Credit only on** `success` + the expected network + a 32-byte tx hash. An explicit failure marks the row `failed`. Anything else (timeout, 5xx, `settlement_pending`, odd response) is **uncertain**: return 202 and leave the row `pending`.
+- **Reconciliation** (manual in v1): for `pending` rows older than 5 minutes, read USDC `authorizationState(payer, nonce)`.
+  - Used → find the `AuthorizationUsed` transaction and credit **only if** the same successful transaction also has `Transfer(payer → pay_to, amount)` from the USDC contract. A used nonce alone is not proof of payment.
+  - Unused and older than 6 minutes → `failed` (the authorization has expired).
+  - `--include-failed` re-checks failed rows; `--id` + `--tx` checks one purchase against a known transaction.
+- **Client** (`src/components/credits/`): `BuyCreditsModal` is loaded with `next/dynamic` when first opened; `payWithWallet.ts` dynamically imports `@x402/core`, `@x402/evm` and `viem` when "Pay with wallet" is pressed. It uses `window.ethereum` only, registers a single network, caps spend at $20, and pins payTo, asset, network and the exact price to what `GET /api/credits` returned. After a signed payment has been sent it never signs again; an unknown outcome is shown as pending. Entry points render only when `purchase.enabled`. No CSP change is needed: the page contacts no new host.
+- **The global daily cap applies to spend, not purchases.** Bought credits are still subject to `GLOBAL_DAILY_CREDIT_CAP` when spent; `purchase` rows are not counted as spend.
+- **Refunds are manual:** return the USDC yourself and revoke the credits via the admin API.
 
 ## Mock mode
 `MOCK_X=1` means:

@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type CreditsInfo, type Draft, type Me } from "../lib/api";
 import { browserTimezone } from "../lib/time";
@@ -12,6 +13,9 @@ export function tabFor(status: Draft["status"]): ListTab {
   return status;
 }
 
+// Optional "buy credits" dialog: its chunk is fetched only when it is first opened (and never if purchases are off).
+const BuyCreditsModal = dynamic(() => import("../credits/BuyCreditsModal").then((m) => m.BuyCreditsModal), { ssr: false });
+
 type Toast = { id: number; text: string; tone: "default" | "error" };
 
 type Ctx = {
@@ -21,6 +25,8 @@ type Ctx = {
   refreshMe: () => Promise<void>;
   /** Balance, costs and recent ledger from /api/credits (null until loaded). */
   credits: CreditsInfo | null;
+  /** Opens the "Buy credits" dialog; null unless this instance sells credits (credits.purchase.enabled). */
+  buyCredits: (() => void) | null;
   drafts: Draft[];
   draftsLoaded: boolean;
   refreshDrafts: () => Promise<void>;
@@ -50,6 +56,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
   const [credits, setCredits] = useState<CreditsInfo | null>(null);
+
+  const [buyOpen, setBuyOpen] = useState(false);
+  const purchase = credits?.purchase?.enabled ? credits.purchase : null;
+  const canBuy = !!purchase;
+  const buyCredits = useMemo(() => (canBuy ? () => setBuyOpen(true) : null), [canBuy]);
 
   const refreshCredits = useCallback(async () => {
     try {
@@ -134,6 +145,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setMe,
       refreshMe,
       credits,
+      buyCredits,
       drafts,
       draftsLoaded,
       refreshDrafts,
@@ -145,12 +157,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSidebarOpen,
       toast,
     }),
-    [me, refreshMe, credits, drafts, draftsLoaded, refreshDrafts, upsertDraft, removeDraft, tab, sidebarOpen, toast],
+    [me, refreshMe, credits, buyCredits, drafts, draftsLoaded, refreshDrafts, upsertDraft, removeDraft, tab, sidebarOpen, toast],
   );
 
   return (
     <AppCtx.Provider value={value}>
       {children}
+      {buyOpen && purchase && <BuyCreditsModal purchase={purchase} onClose={() => setBuyOpen(false)} onPurchased={() => void refreshMe()} />}
       <div className="pointer-events-none fixed inset-x-0 bottom-6 z-[60] flex flex-col items-center gap-2 px-4">
         {toasts.map((t) => (
           <div
