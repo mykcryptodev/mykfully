@@ -11,10 +11,8 @@ import { ConfirmDialog } from "../ui/Modal";
 import { CreditsChip } from "../credits/CreditsChip";
 import {
   IconAlert,
-  IconCheck,
   IconCheckCircle,
   IconClock,
-  IconCopy,
   IconDoc,
   IconGlobe,
   IconLogout,
@@ -57,7 +55,6 @@ export function Sidebar() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [timezones, setTimezones] = useState<string[]>([]);
-  const [copied, setCopied] = useState(false);
   const tz = me?.timezone ?? "UTC";
 
   useEffect(() => setTimezones(listTimezones()), []);
@@ -116,17 +113,6 @@ export function Sidebar() {
       await api.logout();
     } finally {
       window.location.href = "/login";
-    }
-  };
-
-  const copyXId = async () => {
-    if (!me?.xUserId) return;
-    try {
-      await navigator.clipboard.writeText(me.xUserId);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toast("Couldn’t copy — select the ID manually", "error");
     }
   };
 
@@ -309,23 +295,6 @@ export function Sidebar() {
               <IconLogout size={17} />
             </button>
           </div>
-          {me?.xUserId && (
-            <div className="mt-1 px-2 text-[11.5px] leading-4 text-faint">
-              <div className="flex items-center gap-1">
-                <span className="min-w-0 truncate">
-                  Your X user ID: <span className="select-all font-mono text-muted">{me.xUserId}</span>
-                </span>
-                <button
-                  onClick={copyXId}
-                  className="shrink-0 rounded-full p-1 text-muted transition-colors hover:bg-hover hover:text-ink"
-                  aria-label="Copy X user ID"
-                  title={copied ? "Copied" : "Copy"}
-                >
-                  {copied ? <IconCheck size={12} className="text-success" /> : <IconCopy size={12} />}
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       </aside>
 
