@@ -1,36 +1,87 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# mykfully
 
-## Getting Started
+An open-source, self-hostable take on [Typefully](https://typefully.com): write X (Twitter) threads in an editor that looks like X, @mention people with live search, and schedule posts to go out automatically.
 
-First, run the development server:
+Built with Next.js 15 (App Router), Drizzle ORM + Postgres (Neon), and Tailwind. Designed to deploy on Vercel.
+
+## Features
+
+- **Log in with X.** Uses OAuth 2.0 with PKCE. Tokens are encrypted at rest (AES-256-GCM) and refreshed automatically, so scheduled posts keep working while you're away.
+- **Thread composer that looks like X:**
+  - Avatar, name and handle on every post, with the thread connector line.
+  - Live highlighting of @mentions, #hashtags and links.
+  - The real X character counter (`twitter-text` weighted length: links count as 23, emoji as 2).
+  - Long-post limits for Premium accounts.
+  - Split long text into a thread.
+- **Keyboard shortcuts:**
+  - <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd> or three newlines starts a new post.
+  - <kbd>Backspace</kbd> in an empty post removes it.
+- **@mention autocomplete.** Searches X users as you type. It falls back to exact-handle lookup, plus a local cache of people you've mentioned before, when user search isn't available on your API plan.
+- **X-style preview** that shows the thread as it will appear on X.
+- **Autosaved drafts**, with Drafts, Scheduled, Published and Failed views.
+- **Scheduling** in your timezone, plus **Publish now**:
+  - A Vercel Cron job runs every minute and publishes due threads.
+  - It claims each thread atomically, so a thread can't be posted twice.
+  - It saves each tweet ID as it goes, so a thread that fails midway resumes where it stopped instead of reposting.
+  - It retries up to 3 times.
+
+## Quick start (local, no X account needed)
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
+cp .env.example .env.local
+# fill SESSION_SECRET, TOKEN_ENCRYPTION_KEY, CRON_SECRET (see comments), and set MOCK_X=1
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000 and click **Continue with X**.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- With `MOCK_X=1` you're signed in as a demo user. Posting is simulated, and @mention search uses a built-in list of accounts.
+- With `DATABASE_URL` empty, data is stored in an embedded Postgres (PGlite) in `./.data`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Trigger the scheduler manually:
 
-## Learn More
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/publish
+```
 
-To learn more about Next.js, take a look at the following resources:
+Run tests: `pnpm test`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Setting up the X app
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Go to the [X Developer Console](https://console.x.com) and create a Project and App.
+2. In **User authentication settings**, set:
+   - **App permissions:** Read and write
+   - **Type of App:** Web App (confidential client)
+   - **Callback URI:** `https://<your-domain>/api/auth/callback` (and `http://localhost:3000/api/auth/callback` for local testing)
+   - **Website URL:** your domain
+3. Copy the **OAuth 2.0 Client ID and Client Secret** into `X_CLIENT_ID` and `X_CLIENT_SECRET`.
+4. Scopes requested: `tweet.read tweet.write users.read offline.access media.write`.
 
-## Deploy on Vercel
+> **API cost:** the X API is pay-per-use (credits).
+> - Posting costs a small fee per post, and more for posts that contain links.
+> - User search and lookups are billed per user returned. mykfully limits each search to 8 results, debounces keystrokes and caches results, to keep mention search cheap.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deploying to Vercel
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Import this repo in Vercel.
+2. Add a Postgres database. Neon from the Vercel Marketplace works and sets `DATABASE_URL`.
+3. Set the env vars from `.env.example`:
+   - `APP_URL`: your production URL
+   - `X_CLIENT_ID` and `X_CLIENT_SECRET`
+   - `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY` and `CRON_SECRET`
+   - Leave `MOCK_X` unset.
+4. Deploy. Migrations run automatically before `next build` (`scripts/migrate.mjs`).
+5. `vercel.json` registers a cron job that runs every minute on `/api/cron/publish`. Every-minute cron needs the Pro plan. On Hobby, point an external pinger (such as cron-job.org or a GitHub Action) at that URL with the `Authorization: Bearer $CRON_SECRET` header.
+
+## Architecture
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Security
+
+This project uses pnpm with `minimumReleaseAge: 1440` (in `pnpm-workspace.yaml`), so a newly published dependency version can't be installed until it is at least 24 hours old.
+
+## License
+
+MIT
