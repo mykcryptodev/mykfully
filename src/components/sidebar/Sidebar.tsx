@@ -324,11 +324,6 @@ export function Sidebar() {
                   {copied ? <IconCheck size={12} className="text-success" /> : <IconCopy size={12} />}
                 </button>
               </div>
-              {!me.isAdmin && (
-                <div>
-                  Add it to <code className="font-mono">ADMIN_X_USER_IDS</code> to become admin
-                </div>
-              )}
             </div>
           )}
         </div>
