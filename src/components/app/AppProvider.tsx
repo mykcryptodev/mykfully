@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type Draft, type Me } from "../lib/api";
+import { browserTimezone } from "../lib/time";
 
 export type ListTab = "draft" | "scheduled" | "published" | "failed";
 
@@ -58,7 +59,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     api
       .me()
-      .then(({ user }) => setMe(user))
+      .then(async ({ user }) => {
+        setMe(user);
+        // First run: adopt the browser's timezone instead of the UTC default (once per browser).
+        let adopted = false;
+        try {
+          adopted = localStorage.getItem("myk_tz_adopted") === "1";
+        } catch {}
+        const browserTz = browserTimezone();
+        if (!adopted && user.timezone === "UTC" && browserTz !== "UTC") {
+          try {
+            const res = await api.setTimezone(browserTz);
+            setMe(res.user);
+          } catch {}
+        }
+        try {
+          localStorage.setItem("myk_tz_adopted", "1");
+        } catch {}
+      })
       .catch(() => {});
     void refreshDrafts();
   }, [refreshDrafts]);

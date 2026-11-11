@@ -74,6 +74,17 @@ Run tests: `pnpm test`.
 4. Deploy. Migrations run automatically before `next build` (`scripts/migrate.mjs`).
 5. `vercel.json` registers a cron job that runs every minute on `/api/cron/publish`. Every-minute cron needs the Pro plan. On Hobby, point an external pinger (such as cron-job.org or a GitHub Action) at that URL with the `Authorization: Bearer $CRON_SECRET` header.
 
+## Status / caveats
+
+- **Tested with the mock client only.** The full flow (login, composing, @mention search, autosave, scheduling, the cron job publishing threads, resuming after a failure) was tested in `MOCK_X=1` mode against embedded Postgres (PGlite).
+- **Not yet tested for real:**
+  - X OAuth and posting to X, since no X API credentials were available while building it.
+  - The Neon production database.
+  
+  Try it with a test X account first.
+- **Anyone can log in.** Anyone with an X account can sign in to a deployed instance, and their posts use **your** X API credits. If you deploy it publicly, consider adding an allowlist of handles.
+- **No media uploads yet.** Image and video upload is not implemented, although the `media.write` scope is already requested.
+
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
