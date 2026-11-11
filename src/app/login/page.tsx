@@ -19,6 +19,8 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <main className="flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">
       <div className="w-full max-w-sm rounded-2xl border border-neutral-200 bg-white p-8 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/logo.png" alt="mykfully logo" width={72} height={72} className="mx-auto mb-3 h-[72px] w-[72px] rounded-2xl" />
         <h1 className="text-center text-2xl font-semibold tracking-tight text-neutral-900 dark:text-white">mykfully</h1>
         <p className="mt-2 text-center text-sm text-neutral-500 dark:text-neutral-400">
           Write, schedule and publish threads on X.

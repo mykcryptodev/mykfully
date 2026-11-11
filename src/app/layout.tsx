@@ -4,7 +4,6 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "mykfully",
   description: "Write, schedule and publish X threads.",
-  icons: { icon: "/icon.svg" },
 };
 
 export const viewport: Viewport = {

@@ -36,12 +36,8 @@ const TABS: { key: ListTab; label: string; Icon: typeof IconDoc }[] = [
 export function Logo() {
   return (
     <div className="flex items-center gap-2 text-[17px] font-extrabold tracking-tight text-ink">
-      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden>
-        <rect width="32" height="32" rx="8" fill="#1d9bf0" />
-        <path
-          d="M8 23V13.5c0-1.9 1.4-3.3 3.2-3.3 1.2 0 2.2.6 2.8 1.6.6-1 1.6-1.6 2.8-1.6 1.8 0 3.2 1.4 3.2 3.3V23M14 13.5V23M24 10v13" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"
-        />
-      </svg>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/logo.png" alt="" width={26} height={26} className="h-[26px] w-[26px] rounded-[7px]" />
       mykfully
     </div>
   );
