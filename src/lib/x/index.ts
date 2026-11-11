@@ -35,7 +35,8 @@ export function exchangeAuthCode(code: string, codeVerifier: string): Promise<XT
 }
 
 /**
- * Insert the users row if new (granting signup credits exactly once), otherwise refresh profile fields.
+ * Insert the users row if new (granting signup credits exactly once), otherwise refresh profile fields
+ * (and backfill the signup grant for pre-credit users that never got one).
  * Never overwrites the user's timezone, credits or session_version.
  */
 export async function upsertUser(u: XUser): Promise<{ created: boolean }> {
@@ -58,6 +59,7 @@ export async function upsertUser(u: XUser): Promise<{ created: boolean }> {
       .update(schema.users)
       .set({ ...profile, updatedAt: now })
       .where(eq(schema.users.id, u.id));
+    await backfillSignupGrant(db, u.id);
     return { created: false };
   }
 
@@ -68,6 +70,20 @@ export async function upsertUser(u: XUser): Promise<{ created: boolean }> {
     console.error("[x] signup grant failed", e instanceof Error ? e.name : typeof e);
   }
   return { created: true };
+}
+
+/** Users created before the credit system have no 'signup' ledger row: grant it once, on their next login. */
+async function backfillSignupGrant(db: DB, userId: string): Promise<void> {
+  try {
+    const [had] = await db
+      .select({ id: schema.creditLedger.id })
+      .from(schema.creditLedger)
+      .where(and(eq(schema.creditLedger.userId, userId), eq(schema.creditLedger.kind, "signup")))
+      .limit(1);
+    if (!had) await grantSignup(db, userId);
+  } catch (e) {
+    console.error("[x] signup backfill failed", e instanceof Error ? e.name : typeof e);
+  }
 }
 
 function encryptRow(userId: string, t: XTokenSet) {
@@ -127,8 +143,19 @@ async function claimRefresh(db: DB, userId: string): Promise<TokenRow | null> {
   return rows[0] ?? null;
 }
 
-async function releaseClaim(db: DB, userId: string): Promise<void> {
-  await db.update(schema.xTokens).set({ refreshingUntil: null }).where(eq(schema.xTokens.userId, userId));
+/**
+ * Compare-and-set guard on the refresh token we read: if another refresher already saved rotated tokens,
+ * our late writes (claim release, needs_reconnect) must not touch their row.
+ */
+function sameRefreshToken(userId: string, readEnc: string | null) {
+  return and(
+    eq(schema.xTokens.userId, userId),
+    readEnc === null ? isNull(schema.xTokens.refreshTokenEnc) : eq(schema.xTokens.refreshTokenEnc, readEnc),
+  );
+}
+
+async function releaseClaim(db: DB, userId: string, readEnc: string | null): Promise<void> {
+  await db.update(schema.xTokens).set({ refreshingUntil: null }).where(sameRefreshToken(userId, readEnc));
 }
 
 /** Persist rotated tokens (the old refresh token is now dead, so this must not be lost) and release the claim. */
@@ -160,12 +187,18 @@ async function refreshAsWinner(db: DB, row: TokenRow): Promise<XTokenSet> {
       fresh = await xTokenRequest({ grant_type: "refresh_token", refresh_token: current.refreshToken }, clientCreds());
     } catch (e) {
       if (e instanceof XTokenError && e.isDeadRefreshToken) {
-        await db
+        const flagged = await db
           .update(schema.xTokens)
           .set({ needsReconnect: true, refreshingUntil: null })
-          .where(eq(schema.xTokens.userId, userId));
+          .where(sameRefreshToken(userId, row.refreshTokenEnc))
+          .returning({ userId: schema.xTokens.userId });
         released = true;
-        throw new ReconnectRequiredError();
+        if (flagged.length > 0) throw new ReconnectRequiredError();
+        // Another refresher rotated the token while we waited (our claim had expired): use theirs.
+        const latest = await readTokenRow(db, userId);
+        if (latest && !latest.needsReconnect && !needsRefresh(latest)) return rowToTokens(latest);
+        if (latest?.needsReconnect) throw new ReconnectRequiredError();
+        throw new Error("X token refresh raced with another refresher; try again");
       }
       throw e;
     }
@@ -180,7 +213,7 @@ async function refreshAsWinner(db: DB, row: TokenRow): Promise<XTokenSet> {
     released = true;
     return next;
   } finally {
-    if (!released) await releaseClaim(db, userId).catch(() => {});
+    if (!released) await releaseClaim(db, userId, row.refreshTokenEnc).catch(() => {});
   }
 }
 
@@ -203,13 +236,13 @@ export async function refreshWithDbClaim(userId: string, opts: { force?: boolean
     const claimed = await claimRefresh(db, userId);
     if (claimed) {
       if (claimed.needsReconnect) {
-        await releaseClaim(db, userId);
+        await releaseClaim(db, userId, claimed.refreshTokenEnc);
         throw new ReconnectRequiredError();
       }
       // Someone else finished between our read and the claim: use their tokens.
       const changed = claimed.updatedAt.getTime() !== baseVersion;
       if ((changed || !opts.force) && !needsRefresh(claimed)) {
-        await releaseClaim(db, userId);
+        await releaseClaim(db, userId, claimed.refreshTokenEnc);
         return rowToTokens(claimed);
       }
       return refreshAsWinner(db, claimed);
@@ -238,6 +271,10 @@ const inflight = (g.__mykRefresh ??= new Map());
  * Layer 1: concurrent callers in this process share one promise. Layer 2: a DB claim on
  * x_tokens.refreshing_until serializes refreshes across instances.
  * Throws ReconnectRequiredError if the user's X authorization is dead.
+ *
+ * `force`: if a refresh for this user is already in flight in this process, the caller joins it instead of
+ * starting another one. That in-flight call may have been non-forced (and returned the still-valid tokens);
+ * a caller that needs a guaranteed new token must call again once the returned promise settles.
  */
 export function refreshIfNeeded(userId: string, opts: { force?: boolean } = {}): Promise<XTokenSet> {
   const existing = inflight.get(userId);

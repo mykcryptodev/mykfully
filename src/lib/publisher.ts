@@ -4,9 +4,36 @@ import type { DB } from "./db";
 import { drafts, mentionCache, type ThreadPost } from "./db/schema";
 import type { XClient } from "./x/types";
 import type { DraftRow } from "./drafts";
-import { HttpError, isFatalPublishError, toPublicError } from "./errors";
+import { AmbiguousPublishError, HttpError, isFatalPublishError, toPublicError } from "./errors";
 
 export const MAX_ATTEMPTS = 3;
+const PERSIST_ATTEMPTS = 3;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Save posts[i].tweetId, retrying briefly. If it can't be saved, a retry would re-post the tweet, so throw
+ * AmbiguousPublishError (fatal: the draft is marked failed, never auto-retried).
+ */
+async function persistTweetId(db: DB, draftId: string, i: number, id: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await db
+        .update(drafts)
+        .set({
+          posts: sql`jsonb_set(${drafts.posts}, ARRAY[${String(i)}, 'tweetId']::text[], to_jsonb(${id}::text))`,
+          updatedAt: new Date(),
+        })
+        .where(eq(drafts.id, draftId));
+      return;
+    } catch (e) {
+      if (attempt >= PERSIST_ATTEMPTS) {
+        console.error("[publisher] failed to persist tweetId", { draftId, i, tweetId: id }, e instanceof Error ? e.name : e);
+        throw new AmbiguousPublishError();
+      }
+      await sleep(100 * attempt);
+    }
+  }
+}
 
 /** Builds the (metered) X client for a draft's owner; `ref` is the draft id, recorded on ledger rows. */
 export type GetClient = (userId: string, ref?: string) => Promise<XClient>;
@@ -43,13 +70,7 @@ export async function publishDraft(db: DB, draft: DraftRow, client: XClient): Pr
     p.tweetId = id;
     prev = id;
     postedAny = true;
-    await db
-      .update(drafts)
-      .set({
-        posts: sql`jsonb_set(${drafts.posts}, ARRAY[${String(i)}, 'tweetId']::text[], to_jsonb(${id}::text))`,
-        updatedAt: new Date(),
-      })
-      .where(eq(drafts.id, draft.id));
+    await persistTweetId(db, draft.id, i, id);
   }
   if (!postedAny) throw new HttpError(400, "Thread has no non-empty posts");
   return posts;

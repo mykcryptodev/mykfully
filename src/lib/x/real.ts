@@ -3,6 +3,7 @@ import { XApiError, XSearchUnavailableError, type XClient, type XTokenSet, type 
 export const X_API_BASE = "https://api.x.com/2";
 export const X_TOKEN_URL = "https://api.x.com/2/oauth2/token";
 const TOKEN_TIMEOUT_MS = 15_000;
+const API_TIMEOUT_MS = 20_000;
 
 /**
  * Token-endpoint failure. Deliberately carries only the HTTP status and X's short `error` code — never the
@@ -140,6 +141,7 @@ export function createRealXClient(accessToken: string): XClient {
         ...(init.headers ?? {}),
       },
       cache: "no-store",
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
     return { status: res.status, body: await res.text() };
   }

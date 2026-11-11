@@ -127,4 +127,13 @@ describe("signup grant", () => {
     const [u] = await db.select().from(schema.users).where(eq(schema.users.id, "n1"));
     expect(u.username).toBe("renamed");
   });
+
+  it("backfills the signup grant once for a pre-credit user with no signup ledger row", async () => {
+    process.env.SIGNUP_CREDITS = "250";
+    await db.insert(schema.users).values({ id: "old1", username: "old", name: "Old" });
+    expect(await upsertUser({ id: "old1", username: "old", name: "Old" })).toEqual({ created: false });
+    expect(await upsertUser({ id: "old1", username: "old", name: "Old" })).toEqual({ created: false });
+    expect(await getBalance(db, "old1")).toBe(250);
+    expect((await listLedger(db, "old1")).filter((l) => l.kind === "signup")).toHaveLength(1);
+  });
 });

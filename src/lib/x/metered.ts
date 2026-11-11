@@ -1,6 +1,7 @@
 import type { DB } from "../db";
 import { CREDIT_COSTS, debit, postCost, refund } from "../credits";
-import type { XClient, XUser } from "./types";
+import { AmbiguousPublishError } from "../errors";
+import { XApiError, type XClient, type XUser } from "./types";
 
 /** Max users a single search may reserve/return (bounds the per-call charge). */
 export const SEARCH_MAX = 8;
@@ -15,8 +16,17 @@ async function safeRefund(db: DB, userId: string, amount: number, ref: string): 
 }
 
 /**
+ * X definitely did not create the post: a 4xx rejection (incl. 429), except 408 (request timeout, which may
+ * have been processed). Anything else (network error, timeout, 5xx, bad 2xx body) is ambiguous.
+ */
+function isDefiniteRejection(e: unknown): e is XApiError {
+  return e instanceof XApiError && e.status >= 400 && e.status < 500 && e.status !== 408;
+}
+
+/**
  * Wrap an XClient so billable X calls are charged to `userId`'s credits:
- * - postTweet: debit before the call, refund if it throws.
+ * - postTweet: debit before the call; refund only on a definite X rejection (4xx except 408). Any other
+ *   failure throws AmbiguousPublishError with no refund (the post may exist, so it must not be auto-retried).
  * - searchUsers / lookupUsernames: reserve the max possible user reads, refund the unused part.
  * - me(): not metered.
  * Admins are handled inside debit/refund (logged as unmetered, never charged).
@@ -50,8 +60,12 @@ export function meter(db: DB, client: XClient, userId: string, ref?: string): XC
       try {
         return await client.postTweet(text, replyToId);
       } catch (e) {
-        await safeRefund(db, userId, cost, r);
-        throw e;
+        if (isDefiniteRejection(e)) {
+          await safeRefund(db, userId, cost, r);
+          throw e;
+        }
+        console.error("[mykfully] ambiguous post failure", e instanceof XApiError ? `XApiError ${e.status}` : e instanceof Error ? e.name : typeof e);
+        throw new AmbiguousPublishError();
       }
     },
 

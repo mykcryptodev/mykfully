@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -7,7 +7,7 @@ import * as schema from "@/lib/db/schema";
 import type { DB } from "@/lib/db";
 import type { ThreadPost } from "@/lib/db/schema";
 import { getBalance, grant, listLedger } from "@/lib/credits";
-import { InsufficientCreditsError, ReconnectRequiredError } from "@/lib/errors";
+import { AmbiguousPublishError, InsufficientCreditsError, ReconnectRequiredError } from "@/lib/errors";
 import { XApiError, type XClient, type XUser } from "@/lib/x/types";
 import { meter } from "@/lib/x/metered";
 import { runDuePublishing } from "@/lib/publisher";
@@ -55,6 +55,7 @@ beforeEach(async () => {
 });
 afterEach(() => {
   delete process.env.ADMIN_X_USER_IDS;
+  vi.restoreAllMocks();
 });
 
 async function loadDraft(id: string) {
@@ -79,13 +80,29 @@ describe("meter: postTweet", () => {
     expect(spends.map((l) => `${l.delta}:${l.ref}`).sort()).toEqual(["-15:draft-1", "-200:draft-1"]);
   });
 
-  it("refunds when X fails and rethrows the original error", async () => {
+  it.each([400, 403, 422, 429])("refunds on a definite X rejection (%i) and rethrows the original error", async (status) => {
     await grant(db, "admin", "u1", 100, null);
     const x = new FakeX();
-    x.postError = new XApiError(503, "{}");
+    x.postError = new XApiError(status, "{}");
     await expect(meter(db, x, "u1").postTweet("hi")).rejects.toBeInstanceOf(XApiError);
     expect(await getBalance(db, "u1")).toBe(100);
     expect(kinds(await listLedger(db, "u1"))).toEqual(["grant:100", "refund:15", "spend:-15"]);
+  });
+
+  it.each([
+    ["5xx", new XApiError(503, "{}")],
+    ["408", new XApiError(408, "{}")],
+    ["network error", new TypeError("fetch failed")],
+    ["timeout", new DOMException("The operation was aborted due to timeout", "TimeoutError")],
+    ["bad 2xx body", new SyntaxError("Unexpected end of JSON input")],
+  ])("does not refund an ambiguous failure (%s) and throws AmbiguousPublishError", async (_label, err) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await grant(db, "admin", "u1", 100, null);
+    const x = new FakeX();
+    x.postError = err;
+    await expect(meter(db, x, "u1").postTweet("hi")).rejects.toBeInstanceOf(AmbiguousPublishError);
+    expect(await getBalance(db, "u1")).toBe(85);
+    expect(kinds(await listLedger(db, "u1"))).toEqual(["grant:100", "spend:-15"]);
   });
 
   it("does not call X without credits", async () => {
@@ -199,12 +216,43 @@ describe("metered publishing", () => {
     expect((await loadDraft("recon")).lastError).toMatch(/^\[reconnect_required\] /);
   });
 
-  it("transient X errors are still retried", async () => {
+  it("X 429 is refunded and retried", async () => {
     await grant(db, "admin", "u1", 1000, null);
     await insertScheduled("d1", posts);
     const x = new FakeX();
-    x.postError = new XApiError(503, "{}");
+    x.postError = new XApiError(429, "{}");
     const [r] = await runDuePublishing(db, async (uid, ref) => meter(db, x, uid, ref));
     expect(r.status).toBe("scheduled");
+    expect(await getBalance(db, "u1")).toBe(1000);
+  });
+
+  it.each([
+    ["5xx", new XApiError(503, "{}")],
+    ["network error", new TypeError("fetch failed")],
+  ])("ambiguous post failure (%s) → failed, not refunded, not retried; earlier tweetIds kept", async (_label, err) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await grant(db, "admin", "u1", 1000, null);
+    await insertScheduled("d1", posts);
+    const x = new FakeX();
+    const real = x.postTweet.bind(x);
+    let calls = 0;
+    x.postTweet = async (text, replyToId) => {
+      if (++calls === 2) throw err;
+      return real(text, replyToId);
+    };
+    const getClient = async (uid: string, ref?: string) => meter(db, x, uid, ref);
+
+    const [r] = await runDuePublishing(db, getClient);
+    expect(r.status).toBe("failed");
+    const row = await loadDraft("d1");
+    expect([row.status, row.attempts, row.lastError]).toEqual([
+      "failed",
+      1,
+      "[publish_uncertain] X may or may not have published this post. Check your X profile before retrying.",
+    ]);
+    expect(row.posts.map((p) => p.tweetId ?? null)).toEqual(["t1", null, null]);
+    expect(await getBalance(db, "u1")).toBe(970); // two posts charged, none refunded
+    expect(await runDuePublishing(db, getClient)).toEqual([]); // not retried
+    expect(x.posted).toEqual([{ text: "one", replyToId: null }]);
   });
 });

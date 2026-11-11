@@ -1,6 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
+import { getDb } from "@/lib/db";
 import { env } from "@/lib/env";
+import { RateLimitedError } from "@/lib/errors";
+import { clientIp } from "@/lib/http";
+import { limitNamed } from "@/lib/ratelimit";
 import { OAUTH_COOKIE_PATH, oauthCookieName, setSession } from "@/lib/session";
 import { XApiError, XTokenError, exchangeAuthCode, saveTokens, upsertUser } from "@/lib/x";
 import { createRealXClient } from "@/lib/x/real";
@@ -19,7 +23,7 @@ function clearOauthCookie(res: NextResponse) {
 }
 
 /** Only whitelisted codes ever reach /login?error= (see src/app/login/page.tsx). */
-function fail(code: "denied" | "login_failed" | "state_mismatch") {
+function fail(code: "denied" | "login_failed" | "state_mismatch" | "not_allowed" | "rate_limited") {
   const url = new URL("/login", env.appUrl);
   url.searchParams.set("error", code);
   return clearOauthCookie(NextResponse.redirect(url));
@@ -38,8 +42,22 @@ function describe(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
 }
 
+/** ALLOWED_X_USER_IDS (if set) restricts sign-in; admins are always allowed. */
+function isAllowedUser(xUserId: string): boolean {
+  const allowed = env.allowedXUserIds;
+  return !allowed || allowed.has(xUserId) || env.adminIds.has(xUserId);
+}
+
 export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
+
+  try {
+    await limitNamed(await getDb(), "callback", clientIp(req));
+  } catch (e) {
+    if (e instanceof RateLimitedError) return fail("rate_limited");
+    console.error(`[auth/callback] rate limit check failed: ${describe(e)}`);
+    return fail("login_failed");
+  }
 
   // Validate state FIRST, so a forged ?error= (or code) from a third-party link is never honoured.
   let stored: { state?: unknown; verifier?: unknown } = {};
@@ -67,6 +85,10 @@ export async function GET(req: NextRequest) {
   try {
     const tokens = await exchangeAuthCode(code, stored.verifier);
     const me = await createRealXClient(tokens.accessToken).me();
+    if (!isAllowedUser(me.id)) {
+      console.warn("[auth/callback] sign-in rejected: X user not in ALLOWED_X_USER_IDS");
+      return fail("not_allowed");
+    }
     await upsertUser(me);
     await saveTokens(me.id, tokens); // also clears needs_reconnect / refreshing_until
     await setSession(me.id);

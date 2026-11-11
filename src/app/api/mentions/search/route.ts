@@ -4,6 +4,7 @@ import { getDb, schema } from "@/lib/db";
 import { requireUserId } from "@/lib/session";
 import type { DB } from "@/lib/db";
 import { CreditCapReachedError, HttpError, InsufficientCreditsError, RateLimitedError, errorResponse } from "@/lib/errors";
+import { assertSameSiteFetch } from "@/lib/http";
 import { limitNamed } from "@/lib/ratelimit";
 import { XApiError, XSearchUnavailableError, type XUser } from "@/lib/x/types";
 import { getMeteredXClient } from "@/lib/x/metered";
@@ -101,6 +102,7 @@ export async function GET(req: NextRequest) {
   let ownerId: string;
   const db = await getDb();
   try {
+    assertSameSiteFetch(req); // this GET spends credits: block cross-site navigations
     ownerId = await requireUserId();
     await limitNamed(db, "search", ownerId); // 30/min per user, every request
   } catch (e) {

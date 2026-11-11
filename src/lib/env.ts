@@ -55,9 +55,20 @@ export const env = {
   get signupCredits() {
     return intEnv("SIGNUP_CREDITS", 1000);
   },
-  /** Optional cap on total non-admin spend per rolling 24h (0/unset = no cap). */
+  /** Cap on total non-admin spend per rolling 24h. Default 20000 (≈$20/day); 0 disables it. */
   get globalDailyCreditCap() {
-    return intEnv("GLOBAL_DAILY_CREDIT_CAP", 0);
+    return intEnv("GLOBAL_DAILY_CREDIT_CAP", 20000);
+  },
+  /**
+   * Optional sign-in allowlist of X user ids (comma-separated). Empty/unset = anyone may sign in.
+   * Admins (ADMIN_X_USER_IDS) are always allowed.
+   */
+  get allowedXUserIds(): Set<string> | null {
+    const ids = (process.env.ALLOWED_X_USER_IDS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return ids.length ? new Set(ids) : null;
   },
 };
 

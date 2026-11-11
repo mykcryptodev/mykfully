@@ -49,10 +49,23 @@ export class ReconnectRequiredError extends Error {
   }
 }
 
+/**
+ * A post may or may not have been published (network error, timeout, X 5xx, unparseable 2xx, or its tweetId
+ * couldn't be saved). Never retried automatically, to avoid double posts; credits are not refunded.
+ */
+export class AmbiguousPublishError extends Error {
+  readonly code = "publish_uncertain";
+  constructor() {
+    super("X may or may not have published this post. Check your X profile before retrying.");
+    this.name = "AmbiguousPublishError";
+  }
+}
+
 /** Errors that must not be retried by the scheduler. */
 export function isFatalPublishError(e: unknown): boolean {
   return (
     e instanceof InsufficientCreditsError ||
+    e instanceof AmbiguousPublishError ||
     e instanceof ReconnectRequiredError ||
     e instanceof CreditCapReachedError ||
     (e instanceof XApiError && (e.status === 401 || e.status === 403))
@@ -72,6 +85,7 @@ export function toPublicError(e: unknown): PublicError {
   if (e instanceof CreditCapReachedError) return { status: 503, code: e.code, message: e.message };
   if (e instanceof RateLimitedError) return { status: 429, code: e.code, message: e.message, extra: { retryAfter: e.retryAfterSec } };
   if (e instanceof ReconnectRequiredError) return { status: 409, code: e.code, message: e.message };
+  if (e instanceof AmbiguousPublishError) return { status: 502, code: e.code, message: e.message };
   if (e instanceof HttpError) return { status: e.status, code: "error", message: e.message, extra: e.extra };
   if (e instanceof XApiError) return { status: 502, code: "x_api_error", message: `X API error ${e.status}: ${xErrorTitle(e.body)}` };
   if (e instanceof z.ZodError) return { status: 400, code: "invalid_request", message: "Invalid request" };

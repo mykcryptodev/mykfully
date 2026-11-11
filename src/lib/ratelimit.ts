@@ -8,6 +8,7 @@ export const LIMITS = {
   publish: { max: 10, windowSec: 60 },
   draftCreate: { max: 60, windowSec: 60 },
   login: { max: 20, windowSec: 60 },
+  callback: { max: 20, windowSec: 60 },
   admin: { max: 60, windowSec: 60 },
 } as const;
 

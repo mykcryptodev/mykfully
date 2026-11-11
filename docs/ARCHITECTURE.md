@@ -33,6 +33,8 @@ Stack: Next.js 15 App Router (TS, Tailwind v4), Drizzle ORM, Postgres (Neon in p
   - `toPublicError(e)` / `errorResponse(e)`: the only way errors reach clients. The body is `{ error, code, ...extra }`, and unknown errors become `internal_error`.
 - `src/lib/http.ts`
   - Mutating routes call `assertSameOrigin(req)` first. Routes with a body also call `assertJson(req)`.
+  - Credit-spending GET routes (`/api/mentions/search`) call `assertSameSiteFetch(req)`: `Sec-Fetch-Site: same-origin`, or, if that header is absent, a Referer on APP_URL. Otherwise 403.
+  - `clientIp(req)` prefers `x-vercel-forwarded-for`, then `x-real-ip`, then the first `x-forwarded-for` entry.
 - `src/lib/text.ts`
   - `countPost(text): { weighted: number; valid: boolean; max: number }`: uses `twitter-text` `parseTweet`. `max` defaults to 280, or 25000 if the user's `verifiedType` is `blue` and long posts are on.
   - `extractMentions(text): string[]`
@@ -41,12 +43,15 @@ Stack: Next.js 15 App Router (TS, Tailwind v4), Drizzle ORM, Postgres (Neon in p
 Errors are `{ error: string, code: string, ...extra }` (see `errorResponse`). Mutating routes return 403 on a cross-origin `Origin`/`Referer`, and 415 when a body route doesn't send `application/json`.
 - `GET  /api/auth/login`: redirects to X OAuth 2.0 PKCE. In mock mode, it logs in as a fake user directly.
 - `GET  /api/auth/callback`: exchanges the code, upserts `users` and `x_tokens`, sets the session, redirects to `/`.
+  - Rate limit `callback` (20/min per IP) → `/login?error=rate_limited`.
+  - If `ALLOWED_X_USER_IDS` is set, other X users (admins excepted) are redirected to `/login?error=not_allowed` before any DB write.
 - `POST /api/auth/logout`: POST only (GET was removed). Same-origin checked, and it bumps `session_version`.
 - `GET  /api/me` → `{ user: { id, xUserId, username, name, profileImageUrl, verifiedType, timezone, credits, isAdmin, needsReconnect } }`. `needsReconnect` comes from `x_tokens`; it's false in mock mode or when there's no row.
 - `PATCH /api/me` `{ timezone }`
 - `GET  /api/mentions/search?q=ali` → `{ users: XUser[], source: "search" | "lookup" | "cache", creditsExhausted?: true }`
   - Merges the local `mention_cache` (prefix match) with metered X search.
   - X is called only when `q.length >= 2` **and** the cache has fewer than 5 prefix matches.
+  - Rejects cross-site requests with 403 (`assertSameSiteFetch`).
   - Rate limit `search` (30/min per user) on every request → 429. Per-process memo hits are never charged.
   - On insufficient credits or the daily cap, returns cache-only results with `creditsExhausted: true`.
   - The exact-username lookup fallback runs only on `XSearchUnavailableError` or an X 4xx other than 429.
@@ -81,7 +86,8 @@ For admins only (`ADMIN_X_USER_IDS`). Everyone else gets **404**, so the surface
 - Claim due rows atomically: `UPDATE drafts SET status='publishing', locked_at=now() WHERE status='scheduled' AND scheduled_at <= now() RETURNING *`. Stale `publishing` rows with `locked_at` older than 10 minutes are reclaimable.
 - Post the thread sequentially, each post replying to the previous `tweetId`. Persist `posts[i].tweetId` after **each** successful post, and skip posts that already have a `tweetId` on retry.
 - On error: increment `attempts` and record `last_error`. Set `status='failed'` if `attempts >= 3`, otherwise set it back to `scheduled`.
-  - **Fatal** errors (`isFatalPublishError`) go straight to `failed` with no retry: insufficient credits, the daily cap, reconnect required, and X 401/403.
+  - **Fatal** errors (`isFatalPublishError`) go straight to `failed` with no retry: insufficient credits, the daily cap, reconnect required, X 401/403, and `publish_uncertain` (`AmbiguousPublishError`).
+  - `publish_uncertain` means X may have published the post (network error, timeout, 5xx, bad 2xx body, or the tweetId couldn't be saved after 3 tries). It is never retried automatically, to avoid double posts.
   - Already-posted `tweetId`s are always kept, so re-scheduling or publishing after a top-up resumes the thread.
 - `last_error` is **always** `[code] message` built from `toPublicError`, never a raw message. Examples:
   - `[insufficient_credits] Not enough credits (need 15, have 5)`
@@ -94,10 +100,11 @@ For admins only (`ADMIN_X_USER_IDS`). Everyone else gets **404**, so the surface
 ## Credits
 - 1 credit ≈ $0.001 of X spend. `CREDIT_COSTS` are `post` 15, `postWithUrl` 200, `userRead` 10 (each overridable with a `CREDIT_COST_*` env var).
 - New users get `SIGNUP_CREDITS` (default 1000) once.
-- `GLOBAL_DAILY_CREDIT_CAP` optionally caps non-admin spend per rolling 24h.
+- `GLOBAL_DAILY_CREDIT_CAP` caps non-admin spend per rolling 24h (default 20000; 0 disables it).
+- Existing users with no `signup` ledger row (created before credits existed) get the signup grant on their next login.
 - Admins are unlimited; their spend is logged with `unmetered = true`.
 - Metering (`meter()`) is active in mock mode too:
-  - `postTweet`: debit `postCost(text)` before the call; refund if it throws.
+  - `postTweet`: debit `postCost(text)` before the call. Refund only on a definite X rejection (4xx except 408; 429 is refunded). Any other failure is not refunded and throws `AmbiguousPublishError`.
   - `searchUsers(q, max)`: `max` is clamped to 8. Reserve `max × userRead`, then refund the users not returned (the full amount if the call throws).
   - `lookupUsernames(names)`: reserve per name, then refund the names not found.
   - `me()`: free.

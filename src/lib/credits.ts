@@ -114,6 +114,7 @@ export async function refund(db: DB, userId: string, amount: number, opts: Ledge
 
 /**
  * Admin grant (delta > 0) or revoke (delta < 0). Balance is clamped at 0; the ledger records the actual change.
+ * The old balance is read under a row lock (FOR UPDATE), so the ledger delta stays exact under READ COMMITTED.
  * Returns the new balance, or null if the user doesn't exist.
  */
 export async function grant(
@@ -128,14 +129,15 @@ export async function grant(
   const k: CreditKind = kind ?? (delta > 0 ? "grant" : "revoke");
   const id = randomUUID();
   const res = await db.execute(sql`
-    WITH old AS (SELECT id, credits FROM users WHERE id = ${userId}),
+    WITH old AS (SELECT id, credits FROM users WHERE id = ${userId} FOR UPDATE),
     d AS (
-      UPDATE users SET credits = GREATEST(credits + ${delta}, 0), updated_at = now()
-      WHERE id = ${userId} RETURNING id, credits
+      UPDATE users u SET credits = GREATEST(old.credits + ${delta}, 0), updated_at = now()
+      FROM old WHERE u.id = old.id
+      RETURNING u.id, u.credits, old.credits AS old_credits
     )
     INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, actor_id, unmetered, created_at)
-    SELECT ${id}, d.id, d.credits - old.credits, d.credits, ${k}, ${reason}, ${actorId}, false, clock_timestamp()
-    FROM d JOIN old ON old.id = d.id
+    SELECT ${id}, d.id, d.credits - d.old_credits, d.credits, ${k}, ${reason}, ${actorId}, false, clock_timestamp()
+    FROM d
     RETURNING balance_after`);
   const row = execRows<{ balance_after: number }>(res)[0];
   return row ? Number(row.balance_after) : null;

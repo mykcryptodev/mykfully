@@ -23,7 +23,7 @@ Built with Next.js 15 (App Router), Drizzle ORM + Postgres (Neon), and Tailwind.
   - A Vercel Cron job runs every minute and publishes due threads.
   - It claims each thread atomically, so a thread can't be posted twice.
   - It saves each tweet ID as it goes, so a thread that fails midway resumes where it stopped instead of reposting.
-  - It retries up to 3 times.
+  - It retries up to 3 times. If X may have published a post anyway (timeout, network error, X 5xx), the thread is marked failed instead of retried, so nothing is posted twice. Check X, then reschedule.
 
 ## Credits (protecting your X API bill)
 
@@ -43,7 +43,8 @@ Every user spends **credits** whenever mykfully calls a paid X API endpoint on t
   - Admins have **unlimited** credits; their spend is still logged.
   - Admins use the **/admin** page to see every user's balance and spending and to grant or revoke credits.
 - **Safety limits:**
-  - `GLOBAL_DAILY_CREDIT_CAP` (optional) caps total non-admin spend per 24 hours across the whole instance.
+  - `GLOBAL_DAILY_CREDIT_CAP` caps total non-admin spend per rolling 24 hours across the whole instance. It defaults to 20000 (about $20/day); set it to `0` to disable the cap.
+  - `ALLOWED_X_USER_IDS` (optional, comma-separated X user ids) restricts who can sign in. Admins are always allowed. When unset, anyone with an X account can sign in.
   - Per-user rate limits apply to search, publishing, draft creation and login.
 - **Ledger:** every charge, refund and grant is recorded in an append-only ledger.
 
@@ -93,6 +94,7 @@ Run tests: `pnpm test`.
    - `X_CLIENT_ID` and `X_CLIENT_SECRET`
    - `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY` and `CRON_SECRET`
    - `ADMIN_X_USER_IDS` and `SIGNUP_CREDITS`
+   - Optionally `GLOBAL_DAILY_CREDIT_CAP` and `ALLOWED_X_USER_IDS`
    - Leave `MOCK_X` unset. It is ignored on production deployments anyway.
 4. Deploy. Migrations run automatically before `next build` (`scripts/migrate.mjs`).
 5. `vercel.json` registers a cron job that runs every minute on `/api/cron/publish`. Every-minute cron needs the Pro plan. On Hobby, point an external pinger (such as cron-job.org or a GitHub Action) at that URL with the `Authorization: Bearer $CRON_SECRET` header.
@@ -105,7 +107,7 @@ Run tests: `pnpm test`.
   - The Neon production database.
   
   Try it with a test X account first.
-- **Anyone can log in, but spending is capped.** Anyone with an X account can sign in, but they can only spend their credit balance; see [Credits](#credits-protecting-your-x-api-bill).
+- **Anyone can log in unless you set `ALLOWED_X_USER_IDS`, and spending is capped.** Users can only spend their credit balance, and total non-admin spend is capped per day; see [Credits](#credits-protecting-your-x-api-bill).
 - **No media uploads yet.** Image and video upload is not implemented, although the `media.write` scope is already requested.
 
 ## Architecture
@@ -116,7 +118,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - **X tokens:** encrypted with AES-256-GCM, bound to the user id. Refresh is coordinated across serverless instances with a database claim. If X revokes access, the user is asked to reconnect.
 - **Sessions:** signed with HS256 using a secret of at least 32 bytes, and stored in a `__Host-` cookie in production. Sessions can be revoked: logout invalidates every session for that account.
-- **Request checks:** state-changing requests must come from your own `APP_URL` origin (CSRF protection).
+- **Request checks:** state-changing requests must come from your own `APP_URL` origin (CSRF protection). The credit-spending mention search also rejects cross-site requests (`Sec-Fetch-Site`, falling back to Referer).
 - **Headers:** a strict Content-Security-Policy and other security headers are set.
 - **Error messages:** errors shown to users are sanitized, so database details never leak.
 
