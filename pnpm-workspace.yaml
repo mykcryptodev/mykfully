@@ -1,1 +1,3 @@
 minimumReleaseAge: 1440
+overrides:
+  postcss: ">=8.5.23"

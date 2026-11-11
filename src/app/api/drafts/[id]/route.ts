@@ -1,6 +1,8 @@
 import { getDb } from "@/lib/db";
 import { requireUserId } from "@/lib/session";
-import { deleteDraft, errorResponse, getDraft, HttpError, serializeDraft, updateDraft } from "@/lib/drafts";
+import { errorResponse, HttpError } from "@/lib/errors";
+import { assertJson, assertSameOrigin } from "@/lib/http";
+import { deleteDraft, getDraft, serializeDraft, updateDraft } from "@/lib/drafts";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,8 @@ export async function GET(_req: Request, { params }: Ctx) {
 
 export async function PATCH(req: Request, { params }: Ctx) {
   try {
+    assertSameOrigin(req);
+    assertJson(req);
     const userId = await requireUserId();
     const { id } = await params;
     const body = await req.json();
@@ -30,8 +34,9 @@ export async function PATCH(req: Request, { params }: Ctx) {
   }
 }
 
-export async function DELETE(_req: Request, { params }: Ctx) {
+export async function DELETE(req: Request, { params }: Ctx) {
   try {
+    assertSameOrigin(req);
     const userId = await requireUserId();
     const { id } = await params;
     await deleteDraft(await getDb(), userId, id);

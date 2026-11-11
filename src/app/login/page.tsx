@@ -1,16 +1,20 @@
 const ERRORS: Record<string, string> = {
-  invalid_state: "Your login session expired. Please try again.",
-  missing_code: "X didn't return an authorization code. Please try again.",
+  denied: "You cancelled the X authorization.",
   login_failed: "We couldn't complete sign-in with X. Please try again.",
-  access_denied: "You cancelled the X authorization.",
+  state_mismatch: "Your login session expired. Please try again.",
+  not_allowed: "This X account isn't allowed to sign in here.",
+  rate_limited: "Too many sign-in attempts. Please wait a minute and try again.",
+  reconnect: "Your X connection expired. Sign in again to reconnect.",
 };
+const GENERIC_ERROR = "Sign-in failed. Please try again.";
 
 export const metadata = { title: "Sign in · mykfully" };
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string | string[] }> }) {
   const sp = await searchParams;
   const raw = Array.isArray(sp.error) ? sp.error[0] : sp.error;
-  const error = raw ? (ERRORS[raw] ?? raw) : null;
+  // Never reflect the raw query value; unknown codes get a generic message.
+  const error = raw ? (Object.hasOwn(ERRORS, raw) ? ERRORS[raw] : GENERIC_ERROR) : null;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">

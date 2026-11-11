@@ -8,14 +8,18 @@ import { tabFor, useApp, type ListTab } from "../app/AppProvider";
 import { Avatar } from "../ui/Avatar";
 import { VerifiedBadge } from "../ui/VerifiedBadge";
 import { ConfirmDialog } from "../ui/Modal";
+import { CreditsChip } from "../credits/CreditsChip";
 import {
   IconAlert,
+  IconCheck,
   IconCheckCircle,
   IconClock,
+  IconCopy,
   IconDoc,
   IconGlobe,
   IconLogout,
   IconPlus,
+  IconShield,
   IconTrash,
   IconX,
 } from "../ui/icons";
@@ -57,6 +61,7 @@ export function Sidebar() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [timezones, setTimezones] = useState<string[]>([]);
+  const [copied, setCopied] = useState(false);
   const tz = me?.timezone ?? "UTC";
 
   useEffect(() => setTimezones(listTimezones()), []);
@@ -118,6 +123,17 @@ export function Sidebar() {
     }
   };
 
+  const copyXId = async () => {
+    if (!me?.xUserId) return;
+    try {
+      await navigator.clipboard.writeText(me.xUserId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast("Couldn’t copy — select the ID manually", "error");
+    }
+  };
+
   const browserTz = typeof window !== "undefined" ? browserTimezone() : null;
 
   return (
@@ -175,6 +191,18 @@ export function Sidebar() {
               </button>
             );
           })}
+          {me?.isAdmin && (
+            <button
+              onClick={() => go("/admin")}
+              aria-current={pathname === "/admin" ? "page" : undefined}
+              className={`flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-[13.5px] transition-colors ${
+                pathname === "/admin" ? "bg-hover font-semibold text-ink" : "text-ink/80 hover:bg-hover"
+              }`}
+            >
+              <IconShield size={16} className="text-muted" />
+              <span className="flex-1 text-left">Admin</span>
+            </button>
+          )}
         </nav>
 
         <div className="mx-3 mt-3 border-t-[0.5px] border-line-strong" />
@@ -247,6 +275,7 @@ export function Sidebar() {
         </div>
 
         <div className="border-t-[0.5px] border-line-strong p-3">
+          <CreditsChip />
           {me && (
             <label className="mb-2 flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted hover:bg-hover">
               <IconGlobe size={14} />
@@ -284,6 +313,28 @@ export function Sidebar() {
               <IconLogout size={17} />
             </button>
           </div>
+          {me?.xUserId && (
+            <div className="mt-1 px-2 text-[11.5px] leading-4 text-faint">
+              <div className="flex items-center gap-1">
+                <span className="min-w-0 truncate">
+                  Your X user ID: <span className="select-all font-mono text-muted">{me.xUserId}</span>
+                </span>
+                <button
+                  onClick={copyXId}
+                  className="shrink-0 rounded-full p-1 text-muted transition-colors hover:bg-hover hover:text-ink"
+                  aria-label="Copy X user ID"
+                  title={copied ? "Copied" : "Copy"}
+                >
+                  {copied ? <IconCheck size={12} className="text-success" /> : <IconCopy size={12} />}
+                </button>
+              </div>
+              {!me.isAdmin && (
+                <div>
+                  Add it to <code className="font-mono">ADMIN_X_USER_IDS</code> to become admin
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </aside>
 

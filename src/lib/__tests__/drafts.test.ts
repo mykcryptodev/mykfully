@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -8,7 +8,7 @@ import type { DB } from "@/lib/db";
 
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => undefined, set: () => {} }) }));
 
-import { createDraft, deleteDraft, getDraft, HttpError, listDrafts, updateDraft } from "@/lib/drafts";
+import { createDraft, deleteDraft, getDraft, HttpError, listDrafts, MAX_DRAFTS_PER_USER, updateDraft } from "@/lib/drafts";
 
 let db: DB;
 
@@ -17,9 +17,12 @@ beforeEach(async () => {
   await migrate(d, { migrationsFolder: "./drizzle" });
   db = d as unknown as DB;
   await db.insert(schema.users).values([
-    { id: "u1", username: "me", name: "Me" },
+    { id: "u1", username: "me", name: "Me", credits: 1000 },
     { id: "u2", username: "other", name: "Other" },
   ]);
+});
+afterEach(() => {
+  delete process.env.ADMIN_X_USER_IDS;
 });
 
 async function expectStatus(p: Promise<unknown>, status: number) {
@@ -90,5 +93,50 @@ describe("drafts data access", () => {
     expect((await listDrafts(db, "u1", "draft")).length).toBe(1);
     await deleteDraft(db, "u1", d.id);
     expect(await getDraft(db, "u1", d.id)).toBeNull();
+  });
+
+  const future = () => new Date(Date.now() + 60_000).toISOString();
+
+  it("scheduling requires enough credits for non-admins (402 with needed/balance)", async () => {
+    const d = await createDraft(db, "u2", { posts: [{ id: "a", text: "x" }, { id: "b", text: "see https://example.com" }] });
+    await expect(updateDraft(db, "u2", d.id, { scheduledAt: future() })).rejects.toSatisfy(
+      (e) =>
+        e instanceof HttpError &&
+        e.status === 402 &&
+        e.extra?.code === "insufficient_credits" &&
+        e.extra?.needed === 215 &&
+        e.extra?.balance === 0,
+    );
+    expect((await getDraft(db, "u2", d.id))?.status).toBe("draft");
+    // admins bypass the check
+    process.env.ADMIN_X_USER_IDS = "u2";
+    expect((await updateDraft(db, "u2", d.id, { scheduledAt: future() })).status).toBe("scheduled");
+  });
+
+  it("enforces the weighted per-post length server-side using the user's verified type", async () => {
+    const long = "a".repeat(281);
+    const d = await createDraft(db, "u1", { posts: [{ id: "a", text: long }] });
+    await expect(updateDraft(db, "u1", d.id, { scheduledAt: future() })).rejects.toSatisfy(
+      (e) => e instanceof HttpError && e.status === 400 && e.extra?.code === "post_too_long",
+    );
+    await db.update(schema.users).set({ verifiedType: "blue" }).where(eq(schema.users.id, "u1"));
+    expect((await updateDraft(db, "u1", d.id, { scheduledAt: future() })).status).toBe("scheduled");
+  });
+
+  it("caps drafts per user and lists at most 200, newest first", async () => {
+    const base = Date.now();
+    await db.insert(schema.drafts).values(
+      Array.from({ length: MAX_DRAFTS_PER_USER }, (_, i) => ({
+        id: `bulk-${i}`,
+        userId: "u1",
+        posts: [{ id: "a", text: "x" }],
+        updatedAt: new Date(base - i * 1000),
+      })),
+    );
+    await expectStatus(createDraft(db, "u1", { posts: [{ id: "a", text: "x" }] }), 403);
+    const list = await listDrafts(db, "u1");
+    expect(list.length).toBe(200);
+    expect(list[0].id).toBe("bulk-0");
+    expect(list[1].id).toBe("bulk-1");
   });
 });

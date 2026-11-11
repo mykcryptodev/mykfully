@@ -1,5 +1,6 @@
 CREATE TABLE "credit_ledger" (
 	"id" text PRIMARY KEY NOT NULL,
+	"seq" bigserial NOT NULL,
 	"user_id" text NOT NULL,
 	"delta" integer NOT NULL,
 	"balance_after" integer NOT NULL,

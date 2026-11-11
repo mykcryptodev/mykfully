@@ -1,104 +1,91 @@
-import { and, eq, sql } from "drizzle-orm";
-import { getDb, schema } from "../db";
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { getDb, schema, type DB } from "../db";
 import { env } from "../env";
 import { decrypt, encrypt } from "../crypto";
-import { createRealXClient } from "./real";
+import { grantSignup } from "../credits";
+import { ReconnectRequiredError } from "../errors";
+import { XTokenError, createRealXClient, xTokenRequest } from "./real";
 import { MOCK_ME, createMockXClient } from "./mock";
 import type { XClient, XTokenSet, XUser } from "./types";
 
 export * from "./types";
+export { XTokenError, X_TOKEN_URL } from "./real";
 
 export const X_AUTHORIZE_URL = "https://x.com/i/oauth2/authorize";
-export const X_TOKEN_URL = "https://api.x.com/2/oauth2/token";
-export const X_SCOPES = "tweet.read tweet.write users.read offline.access media.write";
+export const X_SCOPES = "tweet.read tweet.write users.read offline.access";
 const REFRESH_SKEW_MS = 2 * 60 * 1000;
+/** Losers of the refresh claim re-read the row this often, for at most REFRESH_WAIT_MS. */
+const REFRESH_POLL_MS = 500;
+const REFRESH_WAIT_MS = 10_000;
+const PERSIST_ATTEMPTS = 3;
 
 export function redirectUri(): string {
   return `${env.appUrl}/api/auth/callback`;
 }
 
-type TokenResponse = {
-  token_type: string;
-  access_token: string;
-  refresh_token?: string;
-  expires_in?: number;
-  scope?: string;
-};
-
-export class XTokenError extends Error {
-  constructor(public status: number, public body: string) {
-    super(`X token endpoint ${status}: ${body.slice(0, 300)}`);
-  }
-}
-
-/** POST to the X token endpoint. Confidential clients use Basic auth (client_id omitted from body). */
-async function tokenRequest(params: Record<string, string>): Promise<XTokenSet> {
-  const body = new URLSearchParams(params);
-  const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
-  const secret = env.xClientSecret;
-  if (secret) {
-    headers.Authorization = `Basic ${Buffer.from(`${env.xClientId}:${secret}`).toString("base64")}`;
-  } else {
-    body.set("client_id", env.xClientId);
-  }
-  const res = await fetch(X_TOKEN_URL, { method: "POST", headers, body, cache: "no-store" });
-  const text = await res.text();
-  if (!res.ok) throw new XTokenError(res.status, text);
-  const t = JSON.parse(text) as TokenResponse;
-  return {
-    accessToken: t.access_token,
-    refreshToken: t.refresh_token ?? null,
-    expiresAt: new Date(Date.now() + (t.expires_in ?? 7200) * 1000),
-    scope: t.scope ?? null,
-  };
+function clientCreds() {
+  return { clientId: env.xClientId, clientSecret: env.xClientSecret };
 }
 
 export function exchangeAuthCode(code: string, codeVerifier: string): Promise<XTokenSet> {
-  return tokenRequest({
-    grant_type: "authorization_code",
-    code,
-    redirect_uri: redirectUri(),
-    code_verifier: codeVerifier,
-  });
+  return xTokenRequest(
+    { grant_type: "authorization_code", code, redirect_uri: redirectUri(), code_verifier: codeVerifier },
+    clientCreds(),
+  );
 }
 
-/** Insert/update the users row. Never overwrites the user's timezone. */
-export async function upsertUser(u: XUser): Promise<void> {
+/**
+ * Insert the users row if new (granting signup credits exactly once), otherwise refresh profile fields.
+ * Never overwrites the user's timezone, credits or session_version.
+ */
+export async function upsertUser(u: XUser): Promise<{ created: boolean }> {
   const db = await getDb();
   const now = new Date();
-  await db
+  const profile = {
+    username: u.username,
+    name: u.name,
+    profileImageUrl: u.profileImageUrl ?? null,
+    verifiedType: u.verifiedType ?? null,
+  };
+  const inserted = await db
     .insert(schema.users)
-    .values({
-      id: u.id,
-      username: u.username,
-      name: u.name,
-      profileImageUrl: u.profileImageUrl ?? null,
-      verifiedType: u.verifiedType ?? null,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: schema.users.id,
-      set: {
-        username: u.username,
-        name: u.name,
-        profileImageUrl: u.profileImageUrl ?? null,
-        verifiedType: u.verifiedType ?? null,
-        updatedAt: now,
-      },
-    });
+    .values({ id: u.id, ...profile, createdAt: now, updatedAt: now })
+    .onConflictDoNothing({ target: schema.users.id })
+    .returning({ id: schema.users.id });
+
+  if (inserted.length === 0) {
+    await db
+      .update(schema.users)
+      .set({ ...profile, updatedAt: now })
+      .where(eq(schema.users.id, u.id));
+    return { created: false };
+  }
+
+  try {
+    await grantSignup(db, u.id);
+  } catch (e) {
+    // No retry: grant() isn't idempotent and may have committed. An admin can top up manually.
+    console.error("[x] signup grant failed", e instanceof Error ? e.name : typeof e);
+  }
+  return { created: true };
 }
 
-/** Store (encrypted) tokens for a user, replacing any existing set. */
-export async function saveTokens(userId: string, t: XTokenSet): Promise<void> {
-  const db = await getDb();
-  const row = {
-    accessTokenEnc: encrypt(t.accessToken),
-    refreshTokenEnc: t.refreshToken ? encrypt(t.refreshToken) : null,
+function encryptRow(userId: string, t: XTokenSet) {
+  return {
+    accessTokenEnc: encrypt(t.accessToken, userId),
+    refreshTokenEnc: t.refreshToken ? encrypt(t.refreshToken, userId) : null,
     expiresAt: t.expiresAt,
     scope: t.scope ?? null,
-    updatedAt: new Date(), // explicit ms-precision value; used as the optimistic-lock version
+    updatedAt: new Date(), // explicit ms-precision value; losers of the refresh claim watch it change
+    refreshingUntil: null,
+    needsReconnect: false,
   };
+}
+
+/** Store (encrypted) tokens for a user after login, replacing any existing set and clearing reconnect state. */
+export async function saveTokens(userId: string, t: XTokenSet): Promise<void> {
+  const db = await getDb();
+  const row = encryptRow(userId, t);
   await db
     .insert(schema.xTokens)
     .values({ userId, ...row })
@@ -107,69 +94,140 @@ export async function saveTokens(userId: string, t: XTokenSet): Promise<void> {
 
 type TokenRow = typeof schema.xTokens.$inferSelect;
 
-async function readTokenRow(userId: string): Promise<TokenRow | null> {
-  const db = await getDb();
+async function readTokenRow(db: DB, userId: string): Promise<TokenRow | null> {
   const rows = await db.select().from(schema.xTokens).where(eq(schema.xTokens.userId, userId)).limit(1);
   return rows[0] ?? null;
 }
 
 function rowToTokens(r: TokenRow): XTokenSet {
   return {
-    accessToken: decrypt(r.accessTokenEnc),
-    refreshToken: r.refreshTokenEnc ? decrypt(r.refreshTokenEnc) : null,
+    accessToken: decrypt(r.accessTokenEnc, r.userId),
+    refreshToken: r.refreshTokenEnc ? decrypt(r.refreshTokenEnc, r.userId) : null,
     expiresAt: r.expiresAt,
     scope: r.scope,
   };
 }
 
 const needsRefresh = (r: TokenRow) => r.expiresAt.getTime() < Date.now() + REFRESH_SKEW_MS;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const noTokens = () => new Error("No X tokens stored for this user; please sign in again");
 
-async function doRefresh(userId: string, opts: { force?: boolean }): Promise<XTokenSet> {
-  const row = await readTokenRow(userId);
-  if (!row) throw new Error(`No X tokens stored for user ${userId}; please sign in again`);
-  if (!opts.force && !needsRefresh(row)) return rowToTokens(row);
-  const current = rowToTokens(row);
-  if (!current.refreshToken) return current; // nothing we can do; let the API call surface 401
-
-  const oldVersion = row.updatedAt;
-  let fresh: XTokenSet;
-  try {
-    fresh = await tokenRequest({ grant_type: "refresh_token", refresh_token: current.refreshToken });
-  } catch (err) {
-    // Another process may have rotated the (single-use) refresh token first. Use its result if so.
-    const latest = await readTokenRow(userId);
-    if (latest && latest.updatedAt.getTime() !== oldVersion.getTime() && !needsRefresh(latest)) {
-      return rowToTokens(latest);
-    }
-    throw err;
-  }
-
-  const db = await getDb();
-  const updated = await db
+/** Cross-instance refresh lock: succeeds for exactly one caller until it clears or 30s pass. */
+async function claimRefresh(db: DB, userId: string): Promise<TokenRow | null> {
+  const rows = await db
     .update(schema.xTokens)
-    .set({
-      accessTokenEnc: encrypt(fresh.accessToken),
-      // X rotates refresh tokens; keep the old one only if (unexpectedly) none was returned.
-      refreshTokenEnc: encrypt(fresh.refreshToken ?? current.refreshToken),
-      expiresAt: fresh.expiresAt,
-      scope: fresh.scope ?? row.scope,
-      updatedAt: new Date(),
-    })
+    .set({ refreshingUntil: sql`now() + interval '30 seconds'` })
     .where(
       and(
         eq(schema.xTokens.userId, userId),
-        // compare at ms precision (JS Date) to avoid microsecond mismatches
-        sql`date_trunc('milliseconds', ${schema.xTokens.updatedAt}) = ${oldVersion.toISOString()}::timestamptz`,
+        or(isNull(schema.xTokens.refreshingUntil), lt(schema.xTokens.refreshingUntil, sql`now()`)),
       ),
     )
-    .returning({ userId: schema.xTokens.userId });
+    .returning();
+  return rows[0] ?? null;
+}
 
-  if (updated.length === 0) {
-    // Lost the race: someone else persisted a newer token set. Prefer what's in the DB.
-    const latest = await readTokenRow(userId);
-    if (latest) return rowToTokens(latest);
+async function releaseClaim(db: DB, userId: string): Promise<void> {
+  await db.update(schema.xTokens).set({ refreshingUntil: null }).where(eq(schema.xTokens.userId, userId));
+}
+
+/** Persist rotated tokens (the old refresh token is now dead, so this must not be lost) and release the claim. */
+async function persistRefreshed(db: DB, userId: string, t: XTokenSet): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await db.update(schema.xTokens).set(encryptRow(userId, t)).where(eq(schema.xTokens.userId, userId));
+      return;
+    } catch (e) {
+      if (attempt >= PERSIST_ATTEMPTS) {
+        console.error("[x/refresh] failed to persist rotated tokens", e instanceof Error ? e.name : e);
+        throw new Error("Failed to save refreshed X tokens");
+      }
+      await sleep(100 * attempt);
+    }
   }
-  return { ...fresh, refreshToken: fresh.refreshToken ?? current.refreshToken };
+}
+
+/** We hold the claim on `row` (the fresh RETURNING row). Refresh, persist, release. */
+async function refreshAsWinner(db: DB, row: TokenRow): Promise<XTokenSet> {
+  const userId = row.userId;
+  let released = false;
+  try {
+    const current = rowToTokens(row);
+    if (!current.refreshToken) return current; // nothing we can do; let the API call surface 401
+
+    let fresh: XTokenSet;
+    try {
+      fresh = await xTokenRequest({ grant_type: "refresh_token", refresh_token: current.refreshToken }, clientCreds());
+    } catch (e) {
+      if (e instanceof XTokenError && e.isDeadRefreshToken) {
+        await db
+          .update(schema.xTokens)
+          .set({ needsReconnect: true, refreshingUntil: null })
+          .where(eq(schema.xTokens.userId, userId));
+        released = true;
+        throw new ReconnectRequiredError();
+      }
+      throw e;
+    }
+
+    const next: XTokenSet = {
+      ...fresh,
+      // X rotates refresh tokens; keep the old one only if (unexpectedly) none was returned.
+      refreshToken: fresh.refreshToken ?? current.refreshToken,
+      scope: fresh.scope ?? row.scope,
+    };
+    await persistRefreshed(db, userId, next); // also clears refreshing_until
+    released = true;
+    return next;
+  } finally {
+    if (!released) await releaseClaim(db, userId).catch(() => {});
+  }
+}
+
+/**
+ * DB-coordinated refresh (no in-process dedupe; see refreshIfNeeded). Exactly one caller across all instances
+ * talks to the token endpoint; the rest poll until the rotated tokens land.
+ * Exported for tests.
+ */
+export async function refreshWithDbClaim(userId: string, opts: { force?: boolean } = {}): Promise<XTokenSet> {
+  const db = await getDb();
+  const row = await readTokenRow(db, userId);
+  if (!row) throw noTokens();
+  if (row.needsReconnect) throw new ReconnectRequiredError();
+  if (!opts.force && !needsRefresh(row)) return rowToTokens(row);
+
+  const baseVersion = row.updatedAt.getTime();
+  const deadline = Date.now() + REFRESH_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    const claimed = await claimRefresh(db, userId);
+    if (claimed) {
+      if (claimed.needsReconnect) {
+        await releaseClaim(db, userId);
+        throw new ReconnectRequiredError();
+      }
+      // Someone else finished between our read and the claim: use their tokens.
+      const changed = claimed.updatedAt.getTime() !== baseVersion;
+      if ((changed || !opts.force) && !needsRefresh(claimed)) {
+        await releaseClaim(db, userId);
+        return rowToTokens(claimed);
+      }
+      return refreshAsWinner(db, claimed);
+    }
+
+    // Lost the claim: wait for the winner.
+    while (Date.now() < deadline) {
+      await sleep(REFRESH_POLL_MS);
+      const latest = await readTokenRow(db, userId);
+      if (!latest) throw noTokens();
+      if (latest.needsReconnect) throw new ReconnectRequiredError();
+      if (latest.updatedAt.getTime() !== baseVersion && !needsRefresh(latest)) return rowToTokens(latest);
+      // Claim released (or expired) without fresh tokens — the winner failed. Try to claim ourselves.
+      if (!latest.refreshingUntil || latest.refreshingUntil.getTime() < Date.now()) break;
+    }
+  }
+  // Never hand back expired tokens: X would 401, which the publisher treats as fatal.
+  throw new Error("Timed out waiting for X token refresh; try again");
 }
 
 const g = globalThis as unknown as { __mykRefresh?: Map<string, Promise<XTokenSet>> };
@@ -177,24 +235,29 @@ const inflight = (g.__mykRefresh ??= new Map());
 
 /**
  * Returns a valid token set for the user, refreshing if it expires within 2 minutes.
- * Concurrent callers in this process share one refresh; cross-process races are resolved
- * via an optimistic `updated_at` check.
+ * Layer 1: concurrent callers in this process share one promise. Layer 2: a DB claim on
+ * x_tokens.refreshing_until serializes refreshes across instances.
+ * Throws ReconnectRequiredError if the user's X authorization is dead.
  */
 export function refreshIfNeeded(userId: string, opts: { force?: boolean } = {}): Promise<XTokenSet> {
   const existing = inflight.get(userId);
   if (existing) return existing;
-  const p = doRefresh(userId, opts).finally(() => inflight.delete(userId));
+  const p = refreshWithDbClaim(userId, opts).finally(() => inflight.delete(userId));
   inflight.set(userId, p);
   return p;
 }
 
-export async function getXClientForUser(userId: string): Promise<XClient> {
+/** Un-metered X client for the user (mock client in MOCK_X mode). */
+export async function getRawXClientForUser(userId: string): Promise<XClient> {
   if (env.mockX) return createMockXClient();
   const tokens = await refreshIfNeeded(userId);
   return createRealXClient(tokens.accessToken);
 }
 
-/** Mock mode: upsert the demo user and return its id (no OAuth, no tokens). */
+/** @deprecated alias — call sites are moving to the metered wrapper (src/lib/x/metered.ts). */
+export const getXClientForUser = getRawXClientForUser;
+
+/** Mock mode: upsert the demo user (signup grant on first insert) and return its id (no OAuth, no tokens). */
 export async function mockLogin(): Promise<string> {
   await upsertUser(MOCK_ME);
   return MOCK_ME.id;

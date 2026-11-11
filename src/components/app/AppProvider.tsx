@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, type Draft, type Me } from "../lib/api";
+import { api, type CreditsInfo, type Draft, type Me } from "../lib/api";
 import { browserTimezone } from "../lib/time";
 
 export type ListTab = "draft" | "scheduled" | "published" | "failed";
@@ -17,6 +17,10 @@ type Toast = { id: number; text: string; tone: "default" | "error" };
 type Ctx = {
   me: Me | null;
   setMe: (me: Me) => void;
+  /** Re-fetch /api/me and /api/credits (after publish, schedule, admin grants…). */
+  refreshMe: () => Promise<void>;
+  /** Balance, costs and recent ledger from /api/credits (null until loaded). */
+  credits: CreditsInfo | null;
   drafts: Draft[];
   draftsLoaded: boolean;
   refreshDrafts: () => Promise<void>;
@@ -45,6 +49,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
+  const [credits, setCredits] = useState<CreditsInfo | null>(null);
+
+  const refreshCredits = useCallback(async () => {
+    try {
+      setCredits(await api.getCredits());
+    } catch {
+      /* endpoint unavailable or 401 (handled by apiFetch) */
+    }
+  }, []);
+
+  const refreshMe = useCallback(async () => {
+    await Promise.all([
+      api
+        .me()
+        .then(({ user }) => setMe(user))
+        .catch(() => {}),
+      refreshCredits(),
+    ]);
+  }, [refreshCredits]);
+
+  // Keep the balance fresh when the user comes back to the tab (the scheduler may have spent credits).
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") void refreshMe();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [refreshMe]);
 
   const refreshDrafts = useCallback(async () => {
     try {
@@ -79,7 +111,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
     void refreshDrafts();
-  }, [refreshDrafts]);
+    void refreshCredits();
+  }, [refreshDrafts, refreshCredits]);
 
   const upsertDraft = useCallback((d: Draft) => {
     setDrafts((list) => {
@@ -99,6 +132,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => ({
       me,
       setMe,
+      refreshMe,
+      credits,
       drafts,
       draftsLoaded,
       refreshDrafts,
@@ -110,7 +145,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSidebarOpen,
       toast,
     }),
-    [me, drafts, draftsLoaded, refreshDrafts, upsertDraft, removeDraft, tab, sidebarOpen, toast],
+    [me, refreshMe, credits, drafts, draftsLoaded, refreshDrafts, upsertDraft, removeDraft, tab, sidebarOpen, toast],
   );
 
   return (

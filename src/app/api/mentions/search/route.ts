@@ -1,8 +1,12 @@
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { NextResponse, type NextRequest } from "next/server";
 import { getDb, schema } from "@/lib/db";
-import { UnauthorizedError, requireUserId, unauthorized } from "@/lib/session";
-import { XApiError, XSearchUnavailableError, getXClientForUser, type XUser } from "@/lib/x";
+import { requireUserId } from "@/lib/session";
+import type { DB } from "@/lib/db";
+import { CreditCapReachedError, HttpError, InsufficientCreditsError, RateLimitedError, errorResponse } from "@/lib/errors";
+import { limitNamed } from "@/lib/ratelimit";
+import { XApiError, XSearchUnavailableError, type XUser } from "@/lib/x/types";
+import { getMeteredXClient } from "@/lib/x/metered";
 
 export const dynamic = "force-dynamic";
 
@@ -36,16 +40,30 @@ function memoSet(key: string, users: XUser[], source: Source) {
 
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
-async function fetchFromX(ownerId: string, q: string): Promise<{ users: XUser[]; source: Source } | null> {
+/** Below this query length we never call X (cache only). */
+const MIN_REMOTE_Q = 2;
+/** If the local cache already has this many prefix matches, skip X entirely. */
+const CACHE_SUFFICIENT = 5;
+
+type Remote = { users: XUser[]; source: Source } | { creditsExhausted: true } | null;
+
+const isCreditError = (e: unknown) => e instanceof InsufficientCreditsError || e instanceof CreditCapReachedError;
+
+/**
+ * Query X (metered). Returns null on soft failures (no client, X down) so the caller serves cache only.
+ * Credit errors → { creditsExhausted }. RateLimitedError is rethrown (→ 429).
+ * The lookup fallback only runs when search is unavailable on the tier or X returned a non-429 4xx.
+ */
+async function fetchFromX(db: DB, ownerId: string, q: string): Promise<Remote> {
   const key = `${ownerId}\u0000${q.toLowerCase()}`;
   const hit = memoGet(key);
-  if (hit) return hit;
+  if (hit) return hit; // memo hits are free: checked before any debit
 
   let client;
   try {
-    client = await getXClientForUser(ownerId);
+    client = await getMeteredXClient(ownerId, "mentions.search");
   } catch (e) {
-    console.warn("[mentions] no X client", e);
+    console.warn("[mentions] no X client", e instanceof Error ? e.name : e);
     return null;
   }
 
@@ -54,9 +72,12 @@ async function fetchFromX(ownerId: string, q: string): Promise<{ users: XUser[];
     memoSet(key, users, "search");
     return { users, source: "search" };
   } catch (e) {
-    const fallback = e instanceof XSearchUnavailableError || (e instanceof XApiError && e.status >= 400 && e.status < 500);
+    if (isCreditError(e)) return { creditsExhausted: true };
+    if (e instanceof RateLimitedError) throw e;
+    const fallback =
+      e instanceof XSearchUnavailableError || (e instanceof XApiError && e.status >= 400 && e.status < 500 && e.status !== 429);
     if (!fallback) {
-      console.warn("[mentions] search failed", e);
+      console.warn("[mentions] search failed", e instanceof XApiError ? e.status : e);
       return null;
     }
   }
@@ -70,24 +91,25 @@ async function fetchFromX(ownerId: string, q: string): Promise<{ users: XUser[];
     memoSet(key, users, "lookup");
     return { users, source: "lookup" };
   } catch (e) {
-    console.warn("[mentions] lookup failed", e);
+    if (isCreditError(e)) return { creditsExhausted: true };
+    console.warn("[mentions] lookup failed", e instanceof XApiError ? e.status : e);
     return null;
   }
 }
 
 export async function GET(req: NextRequest) {
   let ownerId: string;
+  const db = await getDb();
   try {
     ownerId = await requireUserId();
+    await limitNamed(db, "search", ownerId); // 30/min per user, every request
   } catch (e) {
-    if (e instanceof UnauthorizedError) return unauthorized();
-    throw e;
+    return errorResponse(e);
   }
 
   const q = (req.nextUrl.searchParams.get("q") ?? "").trim().replace(/^@+/, "").slice(0, 50);
-  if (q.length < 1) return NextResponse.json({ error: "q is required" }, { status: 400 });
+  if (q.length < 1) return errorResponse(new HttpError(400, "q is required"));
 
-  const db = await getDb();
   const mc = schema.mentionCache;
   const pattern = `${escapeLike(q)}%`;
   const cachedRows = await db
@@ -105,7 +127,17 @@ export async function GET(req: NextRequest) {
     verifiedType: r.verifiedType,
   }));
 
-  const remote = await fetchFromX(ownerId, q);
+  let res: Remote = null;
+  if (q.length >= MIN_REMOTE_Q && cached.length < CACHE_SUFFICIENT) {
+    try {
+      res = await fetchFromX(db, ownerId, q);
+    } catch (e) {
+      if (e instanceof RateLimitedError) return errorResponse(e); // defensive; X-side limits surface as XApiError
+      console.warn("[mentions] remote failed", e);
+    }
+  }
+  const creditsExhausted = !!res && "creditsExhausted" in res;
+  const remote = res && "users" in res ? res : null;
 
   if (remote && remote.users.length > 0) {
     const now = new Date();
@@ -149,5 +181,9 @@ export async function GET(req: NextRequest) {
     if (users.length >= LIMIT) break;
   }
 
-  return NextResponse.json({ users, source: remote?.source ?? "cache" });
+  return NextResponse.json({
+    users,
+    source: remote?.source ?? "cache",
+    ...(creditsExhausted ? { creditsExhausted: true } : {}),
+  });
 }

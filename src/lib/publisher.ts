@@ -4,10 +4,12 @@ import type { DB } from "./db";
 import { drafts, mentionCache, type ThreadPost } from "./db/schema";
 import type { XClient } from "./x/types";
 import type { DraftRow } from "./drafts";
+import { HttpError, isFatalPublishError, toPublicError } from "./errors";
 
 export const MAX_ATTEMPTS = 3;
 
-type GetClient = (userId: string) => Promise<XClient>;
+/** Builds the (metered) X client for a draft's owner; `ref` is the draft id, recorded on ledger rows. */
+export type GetClient = (userId: string, ref?: string) => Promise<XClient>;
 
 // twitter-text is CJS (`module.exports = default`); handle both interop shapes.
 const tt = ((twitterText as unknown as { default?: typeof twitterText }).default ?? twitterText) as typeof twitterText;
@@ -49,7 +51,7 @@ export async function publishDraft(db: DB, draft: DraftRow, client: XClient): Pr
       })
       .where(eq(drafts.id, draft.id));
   }
-  if (!postedAny) throw new Error("Thread has no non-empty posts");
+  if (!postedAny) throw new HttpError(400, "Thread has no non-empty posts");
   return posts;
 }
 
@@ -92,17 +94,31 @@ export async function markPublished(db: DB, draft: DraftRow, posts: ThreadPost[]
   return row;
 }
 
-/** Record a failed attempt: attempts++, last_error; back to scheduled (retry) or failed at MAX_ATTEMPTS. */
+/**
+ * UI-safe `last_error` text: `[code] message`, e.g. `[insufficient_credits] Not enough credits (need 15, have 0)`.
+ * Never stores raw error messages (they can embed SQL, tokens or X response bodies).
+ */
+export function publicErrorText(error: unknown): string {
+  const pe = toPublicError(error);
+  const code = typeof pe.extra?.code === "string" ? pe.extra.code : pe.code;
+  return `[${code}] ${pe.message}`.slice(0, 500);
+}
+
+/**
+ * Record a failed attempt: attempts++, last_error; back to scheduled (retry) or failed at MAX_ATTEMPTS.
+ * Fatal errors (no credits, reconnect needed, X 401/403, cap reached) fail immediately with no retry.
+ * Already-posted tweetIds are untouched, so re-scheduling/publishing later resumes the thread.
+ */
 export async function markFailed(db: DB, draftId: string, error: unknown, opts: { final?: boolean } = {}): Promise<DraftRow> {
-  const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
-  const status = opts.final
+  const final = opts.final || isFatalPublishError(error);
+  const status = final
     ? sql`'failed'`
     : sql`CASE WHEN ${drafts.attempts} + 1 >= ${MAX_ATTEMPTS} OR ${drafts.scheduledAt} IS NULL THEN 'failed' ELSE 'scheduled' END`;
   const [row] = await db
     .update(drafts)
     .set({
       attempts: sql`${drafts.attempts} + 1`,
-      lastError: message,
+      lastError: publicErrorText(error),
       status,
       lockedAt: null,
       updatedAt: new Date(),
@@ -119,7 +135,7 @@ export async function runDuePublishing(db: DB, getClient: GetClient, limit = 10)
   const results: PublishResult[] = [];
   for (const draft of claimed) {
     try {
-      const client = await getClient(draft.userId);
+      const client = await getClient(draft.userId, draft.id);
       const posts = await publishDraft(db, draft, client);
       await markPublished(db, draft, posts);
       results.push({ id: draft.id, status: "published" });
@@ -128,7 +144,7 @@ export async function runDuePublishing(db: DB, getClient: GetClient, limit = 10)
       results.push({
         id: draft.id,
         status: row?.status === "failed" ? "failed" : "scheduled",
-        error: e instanceof Error ? e.message : String(e),
+        error: publicErrorText(e),
       });
     }
   }

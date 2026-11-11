@@ -2,8 +2,18 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { countPost, maxLengthFor } from "@/lib/text";
-import { api, ApiError, uuid, type Draft, type ThreadPost } from "../lib/api";
+import { countPost, hasUrl, maxLengthFor } from "@/lib/text";
+import {
+  api,
+  ApiError,
+  creditErrorMessage,
+  creditsToUsd,
+  formatCredits,
+  uuid,
+  type CreditCosts,
+  type Draft,
+  type ThreadPost,
+} from "../lib/api";
 import { formatSchedule, relativeShort } from "../lib/time";
 import { tabFor, useApp } from "../app/AppProvider";
 import { DRAFT_DELETED_EVENT } from "../sidebar/Sidebar";
@@ -31,6 +41,21 @@ type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 type FocusReq = { id: string; pos: "start" | "end" | number } | null;
 
 const newPost = (text = ""): ThreadPost => ({ id: uuid(), text });
+
+const DEFAULT_COSTS: CreditCosts = { post: 15, postWithUrl: 200, userRead: 10 };
+
+/** Same rules as the server's estimateThreadCost: unposted, non-empty posts; links cost more. */
+function estimateCost(posts: ThreadPost[], costs: CreditCosts): number {
+  return posts
+    .filter((p) => !p.tweetId && p.text.trim())
+    .reduce((sum, p) => sum + (hasUrl(p.text) ? costs.postWithUrl : costs.post), 0);
+}
+
+/** "[code] message" → { code, message } (lastError prefixes written by the scheduler). */
+function parseLastError(err: string): { code: string | null; message: string } {
+  const m = err.match(/^\[([a-z_]+)\]\s*([\s\S]*)$/);
+  return m ? { code: m[1], message: m[2] } : { code: null, message: err };
+}
 const payload = (posts: ThreadPost[]) => posts.map(({ id, text }) => ({ id, text }));
 
 function usePersistentFlag(key: string, initial: boolean) {
@@ -55,7 +80,7 @@ function usePersistentFlag(key: string, initial: boolean) {
 
 export function Composer({ routeId }: { routeId: string | null }) {
   const router = useRouter();
-  const { me, upsertDraft, removeDraft, setTab, setSidebarOpen, toast } = useApp();
+  const { me, credits, refreshMe, upsertDraft, removeDraft, setTab, setSidebarOpen, toast } = useApp();
   const tz = me?.timezone ?? "UTC";
   const max = maxLengthFor(me?.verifiedType);
 
@@ -399,6 +424,17 @@ export function Composer({ routeId }: { routeId: string | null }) {
     return null;
   }, [posts, max]);
 
+  // ---------- credits ----------
+  const costs = credits?.costs ?? DEFAULT_COSTS;
+  const isAdmin = credits?.isAdmin ?? me?.isAdmin ?? false;
+  const balance = credits?.balance ?? me?.credits ?? 0;
+  const estimate = useMemo(() => estimateCost(posts, costs), [posts, costs]);
+  const shortCredits =
+    !!me && !isAdmin && estimate > balance
+      ? `Not enough credits (need ${formatCredits(estimate)}, have ${formatCredits(balance)}). Ask the admin for more.`
+      : null;
+  const blocked = problems ?? shortCredits;
+
   // ---------- actions ----------
   const schedule = async (iso: string) => {
     setBusy("schedule");
@@ -412,9 +448,10 @@ export function Composer({ routeId }: { routeId: string | null }) {
       setScheduleOpen(false);
       toast(`Scheduled for ${formatSchedule(iso, tz)}`);
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Couldn’t schedule", "error");
+      toast(creditErrorMessage(e) ?? (e instanceof Error ? e.message : "Couldn’t schedule"), "error");
     } finally {
       setBusy(null);
+      void refreshMe();
     }
   };
 
@@ -452,7 +489,9 @@ export function Composer({ routeId }: { routeId: string | null }) {
       setConfirm(null);
       toast(d.status === "published" ? "Your thread was published" : `Status: ${d.status}`);
     } catch (e) {
-      setConfirmError(e instanceof Error ? e.message : "Publishing failed");
+      const friendly = creditErrorMessage(e);
+      setConfirmError(friendly ?? (e instanceof Error ? e.message : "Publishing failed"));
+      if (friendly) toast(friendly, "error");
       if (id) {
         try {
           const { draft: d } = await api.getDraft(id);
@@ -464,6 +503,7 @@ export function Composer({ routeId }: { routeId: string | null }) {
       }
     } finally {
       setBusy(null);
+      void refreshMe();
     }
   };
 
@@ -554,11 +594,24 @@ export function Composer({ routeId }: { routeId: string | null }) {
 
           {!readOnly && (
             <>
+              {estimate > 0 && (
+                <span
+                  className={`hidden whitespace-nowrap text-[12.5px] tabular-nums sm:inline ${
+                    shortCredits ? "font-semibold text-danger" : "text-muted"
+                  }`}
+                  title={
+                    shortCredits ??
+                    `Estimated cost: ${formatCredits(estimate)} credits (${creditsToUsd(estimate)})${isAdmin ? " · unmetered for admins" : ""}`
+                  }
+                >
+                  ≈ {formatCredits(estimate)} credits
+                </span>
+              )}
               <div className="relative">
                 <button
-                  disabled={!!problems || !!busy}
+                  disabled={!!blocked || !!busy}
                   onClick={() => setScheduleOpen((o) => !o)}
-                  title={problems ?? (status === "scheduled" ? "Change scheduled time" : "Schedule")}
+                  title={blocked ?? (status === "scheduled" ? "Change scheduled time" : "Schedule")}
                   className="flex h-9 items-center gap-1.5 rounded-full border border-line-strong px-3 text-[14px] font-bold text-ink transition-colors hover:bg-hover disabled:opacity-50 sm:px-4"
                 >
                   <IconClock size={16} />
@@ -576,12 +629,12 @@ export function Composer({ routeId }: { routeId: string | null }) {
                 )}
               </div>
               <button
-                disabled={!!problems || !!busy}
+                disabled={!!blocked || !!busy}
                 onClick={() => {
                   setConfirmError(null);
                   setConfirm("publish");
                 }}
-                title={problems ?? "Publish now"}
+                title={blocked ?? "Publish now"}
                 className="flex h-9 items-center gap-1.5 rounded-full bg-accent px-4 text-[14px] font-bold text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
               >
                 <IconSend size={15} />
@@ -624,11 +677,16 @@ export function Composer({ routeId }: { routeId: string | null }) {
                 Publishing to X…
               </Banner>
             )}
+            {shortCredits && !readOnly && !problems && (
+              <Banner tone="danger" icon={<IconAlert size={18} />}>
+                <span className="flex-1">{shortCredits}</span>
+              </Banner>
+            )}
             {status === "failed" && (
               <Banner tone="danger" icon={<IconAlert size={18} />}>
                 <div className="flex-1">
                   <div className="font-bold">Publishing failed{draft && draft.attempts > 0 ? ` after ${draft.attempts} attempt${draft.attempts > 1 ? "s" : ""}` : ""}</div>
-                  {draft?.lastError && <div className="mt-0.5 break-words text-[13px] opacity-90">{draft.lastError}</div>}
+                  {draft?.lastError && <FailedReason error={draft.lastError} balance={isAdmin ? null : balance} />}
                   <div className="mt-1 text-[13px] text-muted">
                     Fix the posts if needed, then publish now or reschedule. Posts already on X are kept.
                   </div>
@@ -742,6 +800,13 @@ export function Composer({ routeId }: { routeId: string | null }) {
             {posts.length > 1 ? `${posts.length} posts` : "Your post"} will be published to X as{" "}
             <b className="text-ink">@{me?.username}</b> right away.
             {status === "scheduled" && " This replaces the scheduled time."}
+            {estimate > 0 && (
+              <>
+                {" "}
+                Estimated cost: <b className="text-ink">≈ {formatCredits(estimate)} credits</b>
+                {isAdmin ? " (unmetered)" : ""}.
+              </>
+            )}
           </>
         }
         confirmLabel="Publish"
@@ -765,6 +830,40 @@ export function Composer({ routeId }: { routeId: string | null }) {
         onConfirm={deleteCurrent}
         onCancel={() => setConfirm(null)}
       />
+    </div>
+  );
+}
+
+const FAILED_TEXT: Record<string, string> = {
+  insufficient_credits: "You ran out of credits before this could post.",
+  reconnect_required: "Your X connection expired, so this couldn’t post.",
+  credit_cap_reached: "This instance hit its daily credit cap. Try again later.",
+  rate_limited: "X rate-limited the request. Try again in a few minutes.",
+};
+
+function FailedReason({ error, balance }: { error: string; balance: number | null }) {
+  const { code, message } = parseLastError(error);
+  const friendly = code ? FAILED_TEXT[code] : undefined;
+  return (
+    <div className="mt-0.5 break-words text-[13px] opacity-90">
+      {friendly ?? message}
+      {code === "insufficient_credits" && (
+        <span className="text-muted">
+          {" "}
+          {balance != null ? `You have ${formatCredits(balance)} credits. ` : ""}Ask the admin for more, then retry.
+        </span>
+      )}
+      {code === "reconnect_required" && (
+        <a
+          href="/api/auth/login"
+          className="ml-2 inline-flex rounded-full bg-danger px-3 py-0.5 text-[12.5px] font-bold text-white hover:opacity-90"
+        >
+          Reconnect X
+        </a>
+      )}
+      {friendly && message && message !== friendly && (
+        <div className="mt-0.5 text-[12px] text-muted">{message}</div>
+      )}
     </div>
   );
 }

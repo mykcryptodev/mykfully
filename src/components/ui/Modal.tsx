@@ -7,20 +7,28 @@ export function Modal({
   onClose,
   children,
   labelledBy,
+  className = "max-w-[320px] p-8",
 }: {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
   labelledBy?: string;
+  /** Width/padding classes for the dialog panel. */
+  className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Latest onClose without re-running the open effect (which would steal focus) on every parent render.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -30,7 +38,7 @@ export function Modal({
       clearTimeout(t);
       prev?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   return (
     <div
@@ -44,7 +52,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
-        className="animate-pop w-full max-w-[320px] rounded-2xl bg-canvas p-8 shadow-pop"
+        className={`animate-pop w-full rounded-2xl bg-canvas shadow-pop ${className}`}
       >
         {children}
       </div>

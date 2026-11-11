@@ -1,16 +1,34 @@
 import { createHash, randomBytes } from "node:crypto";
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
+import { getDb } from "@/lib/db";
 import { env } from "@/lib/env";
-import { setSession } from "@/lib/session";
+import { RateLimitedError } from "@/lib/errors";
+import { clientIp } from "@/lib/http";
+import { limitNamed } from "@/lib/ratelimit";
+import { OAUTH_COOKIE_PATH, oauthCookieName, setSession } from "@/lib/session";
 import { X_AUTHORIZE_URL, X_SCOPES, mockLogin, redirectUri } from "@/lib/x";
 
 export const dynamic = "force-dynamic";
-const OAUTH_COOKIE = "myk_oauth";
 
 const b64url = (b: Buffer) => b.toString("base64url");
 
-export async function GET() {
-  if (env.mockX) {
+function loginError(code: string) {
+  const url = new URL("/login", env.appUrl);
+  url.searchParams.set("error", code);
+  return NextResponse.redirect(url);
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    await limitNamed(await getDb(), "login", clientIp(req));
+  } catch (e) {
+    if (e instanceof RateLimitedError) return loginError("rate_limited");
+    throw e;
+  }
+
+  // Mock login is an auth bypass: env.mockX is already off on Vercel production, and under
+  // NODE_ENV=production it additionally needs ALLOW_MOCK_LOGIN=1 (local smoke tests only).
+  if (env.mockX && env.allowMockLogin) {
     const userId = await mockLogin();
     await setSession(userId);
     return NextResponse.redirect(new URL("/", env.appUrl));
@@ -30,11 +48,11 @@ export async function GET() {
   url.searchParams.set("code_challenge_method", "S256");
 
   const res = NextResponse.redirect(url.toString());
-  res.cookies.set(OAUTH_COOKIE, JSON.stringify({ state, verifier }), {
+  res.cookies.set(oauthCookieName(), JSON.stringify({ state, verifier }), {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: env.isProd,
     sameSite: "lax", // must survive the top-level redirect back from x.com
-    path: "/api/auth",
+    path: OAUTH_COOKIE_PATH,
     maxAge: 600,
   });
   return res;

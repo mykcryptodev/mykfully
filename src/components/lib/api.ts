@@ -25,6 +25,40 @@ export type Me = {
   profileImageUrl: string | null;
   verifiedType: string | null;
   timezone: string;
+  credits: number;
+  isAdmin: boolean;
+  needsReconnect: boolean;
+  xUserId: string;
+};
+
+export type CreditKind = "signup" | "grant" | "revoke" | "spend" | "refund";
+
+export type LedgerEntry = {
+  id: string;
+  delta: number;
+  balanceAfter: number;
+  kind: CreditKind;
+  reason: string | null;
+  ref: string | null;
+  unmetered: boolean;
+  createdAt: string;
+};
+
+export type CreditCosts = { post: number; postWithUrl: number; userRead: number };
+
+export type CreditsInfo = { balance: number; isAdmin: boolean; costs: CreditCosts; ledger: LedgerEntry[] };
+
+export type AdminUser = {
+  id: string;
+  username: string;
+  name: string;
+  profileImageUrl: string | null;
+  credits: number;
+  isAdmin: boolean;
+  spent7d: number;
+  spent30d: number;
+  createdAt: string;
+  lastSeen: string | null;
 };
 
 export type { XUser };
@@ -33,8 +67,13 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** Machine-readable code from the JSON body (e.g. "insufficient_credits", "rate_limited"). */
+    public code: string | null = null,
+    /** Any other fields of the JSON error body (e.g. `needed`, `balance`, `retryAfter`). */
+    public extra: Record<string, unknown> = {},
   ) {
     super(message);
+    this.name = "ApiError";
   }
 }
 
@@ -59,7 +98,15 @@ export async function apiFetch<T>(url: string, init: RequestInit & { json?: unkn
       (data && typeof data.error === "string" && data.error) ||
       (data?.issues?.[0]?.message as string | undefined) ||
       `Request failed (${res.status})`;
-    throw new ApiError(res.status, msg);
+    const extra: Record<string, unknown> = data && typeof data === "object" ? { ...data } : {};
+    const code = extra.code;
+    delete extra.error;
+    delete extra.code;
+    if (extra.retryAfter == null) {
+      const ra = Number(res.headers.get("Retry-After"));
+      if (Number.isFinite(ra) && ra > 0) extra.retryAfter = ra;
+    }
+    throw new ApiError(res.status, msg, typeof code === "string" ? code : null, extra);
   }
   return data as T;
 }
@@ -78,8 +125,49 @@ export const api = {
   deleteDraft: (id: string) => apiFetch<{ ok: true }>(`/api/drafts/${id}`, { method: "DELETE" }),
   publish: (id: string) => apiFetch<{ draft: Draft }>(`/api/drafts/${id}/publish`, { method: "POST" }),
   searchMentions: (q: string, signal?: AbortSignal) =>
-    apiFetch<{ users: XUser[]; source: string }>(`/api/mentions/search?q=${encodeURIComponent(q)}`, { signal }),
+    apiFetch<{ users: XUser[]; source: string; creditsExhausted?: boolean }>(
+      `/api/mentions/search?q=${encodeURIComponent(q)}`,
+      { signal },
+    ),
+  getCredits: () => apiFetch<CreditsInfo>("/api/credits"),
+  adminUsers: () => apiFetch<{ users: AdminUser[] }>("/api/admin/users"),
+  adminLedger: (userId: string) =>
+    apiFetch<{ ledger: LedgerEntry[] }>(`/api/admin/users/${encodeURIComponent(userId)}/ledger`),
+  adminGrant: (userId: string, delta: number, reason: string) =>
+    apiFetch<{ balance: number }>("/api/admin/credits", { method: "POST", json: { userId, delta, reason } }),
 };
+
+/** 1 credit ≈ $0.001 of X API spend. */
+export function creditsToUsd(credits: number): string {
+  const usd = credits / 1000;
+  return `~$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: usd < 1 && usd > 0 ? 3 : 2 })}`;
+}
+
+export function formatCredits(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/** Friendly toast text for credit / rate-limit / cap errors; null when the error isn't one of those. */
+export function creditErrorMessage(e: unknown): string | null {
+  if (!(e instanceof ApiError)) return null;
+  if (e.status === 402 || e.code === "insufficient_credits") {
+    const needed = Number(e.extra.needed);
+    const balance = Number(e.extra.balance);
+    return Number.isFinite(needed) && Number.isFinite(balance)
+      ? `Not enough credits (need ${formatCredits(needed)}, have ${formatCredits(balance)}). Ask the admin for more.`
+      : "Not enough credits. Ask the admin for more.";
+  }
+  if (e.status === 429 || e.code === "rate_limited") {
+    const s = Number(e.extra.retryAfter);
+    return Number.isFinite(s) && s > 0
+      ? `Too many requests — try again in ${s < 60 ? `${Math.ceil(s)}s` : `${Math.ceil(s / 60)} min`}.`
+      : "Too many requests — try again shortly.";
+  }
+  if (e.status === 503 || e.code === "credit_cap_reached")
+    return "This instance hit its daily credit cap. Try again later.";
+  if (e.code === "reconnect_required") return "Your X connection expired. Reconnect X to keep publishing.";
+  return null;
+}
 
 export function uuid(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();

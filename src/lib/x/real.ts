@@ -1,6 +1,101 @@
-import { XApiError, XSearchUnavailableError, type XClient, type XUser } from "./types";
+import { XApiError, XSearchUnavailableError, type XClient, type XTokenSet, type XUser } from "./types";
 
 export const X_API_BASE = "https://api.x.com/2";
+export const X_TOKEN_URL = "https://api.x.com/2/oauth2/token";
+const TOKEN_TIMEOUT_MS = 15_000;
+
+/**
+ * Token-endpoint failure. Deliberately carries only the HTTP status and X's short `error` code — never the
+ * response body or request params, which could contain tokens/codes.
+ */
+export class XTokenError extends Error {
+  constructor(
+    public status: number,
+    public code: string | null,
+    /** Used only for classification (see isDeadRefreshToken); never logged or put in `message`. */
+    private readonly description: string | null = null,
+  ) {
+    super(`X token endpoint ${status}${code ? ` (${code})` : ""}`);
+    this.name = "XTokenError";
+  }
+
+  /** X's answer when a refresh token is revoked, expired, or already rotated. */
+  get isDeadRefreshToken(): boolean {
+    if (this.status !== 400) return false;
+    if (this.code === "invalid_grant") return true;
+    return this.code === "invalid_request" && /refresh[ _]?token/i.test(this.description ?? "");
+  }
+}
+
+function safeCode(v: unknown): string | null {
+  return typeof v === "string" && /^[a-z_]{1,64}$/i.test(v) ? v : null;
+}
+
+type TokenResponse = {
+  token_type: string;
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  scope?: string;
+};
+
+/**
+ * POST to the X OAuth2 token endpoint. Confidential clients use Basic auth (client_id omitted from body).
+ * Errors are XTokenError (status + code only); network failures/timeouts are rethrown with a generic message.
+ */
+export async function xTokenRequest(
+  params: Record<string, string>,
+  client: { clientId: string; clientSecret: string | null },
+): Promise<XTokenSet> {
+  const body = new URLSearchParams(params);
+  const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
+  if (client.clientSecret) {
+    headers.Authorization = `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`;
+  } else {
+    body.set("client_id", client.clientId);
+  }
+  let res: Response;
+  try {
+    res = await fetch(X_TOKEN_URL, {
+      method: "POST",
+      headers,
+      body,
+      cache: "no-store",
+      signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const name = e instanceof Error ? e.name : "Error";
+    throw new Error(`X token endpoint unreachable (${name})`);
+  }
+  const text = await res.text();
+  if (!res.ok) {
+    let code: string | null = null;
+    let description: string | null = null;
+    try {
+      const j = JSON.parse(text) as { error?: unknown; error_description?: unknown };
+      code = safeCode(j.error);
+      description = typeof j.error_description === "string" ? j.error_description.slice(0, 300) : null;
+    } catch {
+      /* non-JSON body */
+    }
+    const err = new XTokenError(res.status, code, description);
+    console.error(`[x/token] ${err.message}`);
+    throw err;
+  }
+  let t: TokenResponse;
+  try {
+    t = JSON.parse(text) as TokenResponse;
+  } catch {
+    throw new Error("X token endpoint returned invalid JSON");
+  }
+  if (!t.access_token) throw new Error("X token endpoint returned no access_token");
+  return {
+    accessToken: t.access_token,
+    refreshToken: t.refresh_token ?? null,
+    expiresAt: new Date(Date.now() + (t.expires_in ?? 7200) * 1000),
+    scope: t.scope ?? null,
+  };
+}
 const USER_FIELDS = "profile_image_url,verified_type,subscription_type,description,public_metrics";
 
 type RawUser = {

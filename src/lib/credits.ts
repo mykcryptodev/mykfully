@@ -69,8 +69,8 @@ export async function debit(db: DB, userId: string, cost: number, opts: LedgerOp
 
   if (isAdmin(userId)) {
     const res = await db.execute(sql`
-      INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, ref, unmetered)
-      SELECT ${id}, u.id, ${-cost}, u.credits, 'spend', ${opts.reason ?? null}, ${opts.ref ?? null}, true
+      INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, ref, unmetered, created_at)
+      SELECT ${id}, u.id, ${-cost}, u.credits, 'spend', ${opts.reason ?? null}, ${opts.ref ?? null}, true, clock_timestamp()
       FROM users u WHERE u.id = ${userId}
       RETURNING balance_after`);
     return { balance: Number(execRows<{ balance_after: number }>(res)[0]?.balance_after ?? 0), unmetered: true };
@@ -85,8 +85,8 @@ export async function debit(db: DB, userId: string, cost: number, opts: LedgerOp
       WHERE id = ${userId} AND credits >= ${cost}
       RETURNING id, credits
     )
-    INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, ref, unmetered)
-    SELECT ${id}, d.id, ${-cost}, d.credits, 'spend', ${opts.reason ?? null}, ${opts.ref ?? null}, false FROM d
+    INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, ref, unmetered, created_at)
+    SELECT ${id}, d.id, ${-cost}, d.credits, 'spend', ${opts.reason ?? null}, ${opts.ref ?? null}, false, clock_timestamp() FROM d
     RETURNING balance_after`);
   const row = execRows<{ balance_after: number }>(res)[0];
   if (!row) throw new InsufficientCreditsError(cost, await getBalance(db, userId));
@@ -99,8 +99,8 @@ export async function refund(db: DB, userId: string, amount: number, opts: Ledge
   const id = randomUUID();
   if (isAdmin(userId)) {
     await db.execute(sql`
-      INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, ref, unmetered)
-      SELECT ${id}, u.id, ${amount}, u.credits, 'refund', ${opts.reason ?? null}, ${opts.ref ?? null}, true
+      INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, ref, unmetered, created_at)
+      SELECT ${id}, u.id, ${amount}, u.credits, 'refund', ${opts.reason ?? null}, ${opts.ref ?? null}, true, clock_timestamp()
       FROM users u WHERE u.id = ${userId}`);
     return;
   }
@@ -108,8 +108,8 @@ export async function refund(db: DB, userId: string, amount: number, opts: Ledge
     WITH d AS (
       UPDATE users SET credits = credits + ${amount}, updated_at = now() WHERE id = ${userId} RETURNING id, credits
     )
-    INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, ref, unmetered)
-    SELECT ${id}, d.id, ${amount}, d.credits, 'refund', ${opts.reason ?? null}, ${opts.ref ?? null}, false FROM d`);
+    INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, ref, unmetered, created_at)
+    SELECT ${id}, d.id, ${amount}, d.credits, 'refund', ${opts.reason ?? null}, ${opts.ref ?? null}, false, clock_timestamp() FROM d`);
 }
 
 /**
@@ -133,8 +133,8 @@ export async function grant(
       UPDATE users SET credits = GREATEST(credits + ${delta}, 0), updated_at = now()
       WHERE id = ${userId} RETURNING id, credits
     )
-    INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, actor_id, unmetered)
-    SELECT ${id}, d.id, d.credits - old.credits, d.credits, ${k}, ${reason}, ${actorId}, false
+    INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, reason, actor_id, unmetered, created_at)
+    SELECT ${id}, d.id, d.credits - old.credits, d.credits, ${k}, ${reason}, ${actorId}, false, clock_timestamp()
     FROM d JOIN old ON old.id = d.id
     RETURNING balance_after`);
   const row = execRows<{ balance_after: number }>(res)[0];
@@ -152,6 +152,6 @@ export async function listLedger(db: DB, userId: string, limit = 50) {
     .select()
     .from(creditLedger)
     .where(eq(creditLedger.userId, userId))
-    .orderBy(desc(creditLedger.createdAt))
+    .orderBy(desc(creditLedger.seq))
     .limit(Math.min(Math.max(limit, 1), 500));
 }

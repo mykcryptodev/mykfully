@@ -1,15 +1,18 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { jwtVerify } from "jose";
 
-// Edge runtime: no db / node imports here.
-const SESSION_COOKIE = "myk_session";
+// Edge runtime: no db / node imports here (so not src/lib/session.ts). Signature-only check;
+// route handlers enforce session_version via getSession().
+const IS_PROD = process.env.NODE_ENV === "production";
+/** Must match sessionCookieName() in src/lib/session.ts. */
+const SESSION_COOKIE = IS_PROD ? "__Host-myk_session" : "myk_session";
+const MIN_SECRET_BYTES = 32;
 
-async function isAuthed(req: NextRequest): Promise<boolean> {
+async function isAuthed(req: NextRequest, secret: Uint8Array): Promise<boolean> {
   const token = req.cookies.get(SESSION_COOKIE)?.value;
-  const secret = process.env.SESSION_SECRET;
-  if (!token || !secret) return false;
+  if (!token) return false;
   try {
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(secret), { algorithms: ["HS256"] });
+    const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
     return !!payload.sub;
   } catch {
     return false;
@@ -17,17 +20,28 @@ async function isAuthed(req: NextRequest): Promise<boolean> {
 }
 
 export async function middleware(req: NextRequest) {
-  if (await isAuthed(req)) return NextResponse.next();
+  const raw = process.env.SESSION_SECRET ?? "";
+  const secret = new TextEncoder().encode(raw);
+  if (secret.length < MIN_SECRET_BYTES) {
+    // Fail closed: a short/missing secret makes sessions forgeable.
+    console.error("[middleware] SESSION_SECRET is missing or shorter than 32 bytes; refusing requests");
+    return new NextResponse("Server misconfigured", { status: 500 });
+  }
+
+  if (await isAuthed(req, secret)) return NextResponse.next();
   const url = req.nextUrl.clone();
   const next = req.nextUrl.pathname + req.nextUrl.search;
   url.pathname = "/login";
   url.search = next && next !== "/" ? `?next=${encodeURIComponent(next)}` : "";
   const res = NextResponse.redirect(url);
-  if (req.cookies.has(SESSION_COOKIE)) res.cookies.delete(SESSION_COOKIE); // drop invalid/expired cookie
+  if (req.cookies.has(SESSION_COOKIE)) {
+    // drop invalid/expired cookie; __Host- cookies can only be cleared with matching attributes
+    res.cookies.set(SESSION_COOKIE, "", { path: "/", secure: IS_PROD, httpOnly: true, sameSite: "lax", maxAge: 0 });
+  }
   return res;
 }
 
 export const config = {
-  // Everything except /login, /api/**, Next internals, and files with an extension (static assets).
-  matcher: ["/((?!login|api/|_next/|favicon\\.ico|.*\\.[\\w]+$).*)"],
+  // Everything except /login, /api/**, Next internals, and real static asset extensions.
+  matcher: ["/((?!login(?:/|$)|api/|_next/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|txt|woff2?)$).*)"],
 };

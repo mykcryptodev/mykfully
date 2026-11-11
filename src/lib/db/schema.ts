@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, jsonb, uniqueIndex, index, boolean, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, jsonb, uniqueIndex, index, boolean, primaryKey, bigserial } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: text("id").primaryKey(), // X user id
@@ -75,6 +75,7 @@ export const creditLedger = pgTable(
   "credit_ledger",
   {
     id: text("id").primaryKey(), // uuid
+    seq: bigserial("seq", { mode: "number" }).notNull(), // insertion order (timestamps can tie)
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     delta: integer("delta").notNull(),
     balanceAfter: integer("balance_after").notNull(),

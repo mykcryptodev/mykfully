@@ -1,5 +1,5 @@
 {
-  "id": "0d8e9897-5f96-4074-8d8f-0a48b3e591b1",
+  "id": "16623052-004f-4a61-aea4-c1550177a560",
   "prevId": "78c0e872-dc0d-4b13-ada7-dfc8a4a154df",
   "version": "7",
   "dialect": "postgresql",
@@ -12,6 +12,12 @@
           "name": "id",
           "type": "text",
           "primaryKey": true,
+          "notNull": true
+        },
+        "seq": {
+          "name": "seq",
+          "type": "bigserial",
+          "primaryKey": false,
           "notNull": true
         },
         "user_id": {

@@ -378,6 +378,7 @@ function PostEditorImpl({
               activeIndex={safeActive}
               loading={search.loading}
               resolved={search.resolved}
+              creditsExhausted={search.creditsExhausted}
               query={mention!.query}
               style={{ top: menuPos.top, left: menuPos.left }}
               onHover={setActive}

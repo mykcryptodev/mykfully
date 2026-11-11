@@ -1,7 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { getDb } from "@/lib/db";
 import { env } from "@/lib/env";
-import { getXClientForUser } from "@/lib/x";
+import { errorResponse } from "@/lib/errors";
+import { getMeteredXClient } from "@/lib/x/metered";
 import { runDuePublishing } from "@/lib/publisher";
 
 export const dynamic = "force-dynamic";
@@ -22,11 +23,12 @@ function authorized(req: Request): boolean {
 async function handle(req: Request) {
   if (!authorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
   try {
-    const results = await runDuePublishing(await getDb(), getXClientForUser);
+    // Metered: each post is debited from the draft owner's credits (ref = draft id).
+    const results = await runDuePublishing(await getDb(), getMeteredXClient);
     return Response.json({ processed: results.length, results });
   } catch (e) {
     console.error("cron publish failed", e);
-    return Response.json({ error: e instanceof Error ? e.message : "internal_error" }, { status: 500 });
+    return errorResponse(e);
   }
 }
 

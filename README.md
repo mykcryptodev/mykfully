@@ -25,6 +25,28 @@ Built with Next.js 15 (App Router), Drizzle ORM + Postgres (Neon), and Tailwind.
   - It saves each tweet ID as it goes, so a thread that fails midway resumes where it stopped instead of reposting.
   - It retries up to 3 times.
 
+## Credits (protecting your X API bill)
+
+Every user spends **credits** whenever mykfully calls a paid X API endpoint on their behalf. 1 credit ≈ $0.001.
+
+| Action | Credits |
+|---|---|
+| Publish a post | 15 |
+| Publish a post that contains a link | 200 |
+| @mention search (per user returned, max 8) | 10 |
+
+- **Balances:**
+  - New accounts get `SIGNUP_CREDITS` once (default 1000, about $1). Set it to `0` so new accounts have nothing until you grant credits.
+  - When a user runs out, publishing and paid searches stop. Cached mention suggestions keep working.
+- **Admins:**
+  - Admins are listed in `ADMIN_X_USER_IDS` (your numeric X user id, shown in the account menu).
+  - Admins have **unlimited** credits; their spend is still logged.
+  - Admins use the **/admin** page to see every user's balance and spending and to grant or revoke credits.
+- **Safety limits:**
+  - `GLOBAL_DAILY_CREDIT_CAP` (optional) caps total non-admin spend per 24 hours across the whole instance.
+  - Per-user rate limits apply to search, publishing, draft creation and login.
+- **Ledger:** every charge, refund and grant is recorded in an append-only ledger.
+
 ## Quick start (local, no X account needed)
 
 ```bash
@@ -70,7 +92,8 @@ Run tests: `pnpm test`.
    - `APP_URL`: your production URL
    - `X_CLIENT_ID` and `X_CLIENT_SECRET`
    - `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY` and `CRON_SECRET`
-   - Leave `MOCK_X` unset.
+   - `ADMIN_X_USER_IDS` and `SIGNUP_CREDITS`
+   - Leave `MOCK_X` unset. It is ignored on production deployments anyway.
 4. Deploy. Migrations run automatically before `next build` (`scripts/migrate.mjs`).
 5. `vercel.json` registers a cron job that runs every minute on `/api/cron/publish`. Every-minute cron needs the Pro plan. On Hobby, point an external pinger (such as cron-job.org or a GitHub Action) at that URL with the `Authorization: Bearer $CRON_SECRET` header.
 
@@ -82,7 +105,7 @@ Run tests: `pnpm test`.
   - The Neon production database.
   
   Try it with a test X account first.
-- **Anyone can log in.** Anyone with an X account can sign in to a deployed instance, and their posts use **your** X API credits. If you deploy it publicly, consider adding an allowlist of handles.
+- **Anyone can log in, but spending is capped.** Anyone with an X account can sign in, but they can only spend their credit balance; see [Credits](#credits-protecting-your-x-api-bill).
 - **No media uploads yet.** Image and video upload is not implemented, although the `media.write` scope is already requested.
 
 ## Architecture
@@ -90,6 +113,13 @@ Run tests: `pnpm test`.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Security
+
+- **X tokens:** encrypted with AES-256-GCM, bound to the user id. Refresh is coordinated across serverless instances with a database claim. If X revokes access, the user is asked to reconnect.
+- **Sessions:** signed with HS256 using a secret of at least 32 bytes, and stored in a `__Host-` cookie in production. Sessions can be revoked: logout invalidates every session for that account.
+- **Request checks:** state-changing requests must come from your own `APP_URL` origin (CSRF protection).
+- **Headers:** a strict Content-Security-Policy and other security headers are set.
+- **Error messages:** errors shown to users are sanitized, so database details never leak.
+
 
 This project uses pnpm with `minimumReleaseAge: 1440` (in `pnpm-workspace.yaml`), so a newly published dependency version can't be installed until it is at least 24 hours old.
 

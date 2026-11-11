@@ -12,6 +12,7 @@ export function MentionMenu({
   activeIndex,
   loading,
   resolved,
+  creditsExhausted,
   query,
   style,
   onHover,
@@ -22,6 +23,7 @@ export function MentionMenu({
   activeIndex: number;
   loading: boolean;
   resolved: boolean;
+  creditsExhausted?: boolean;
   query: string;
   style: React.CSSProperties;
   onHover: (i: number) => void;
@@ -76,6 +78,11 @@ export function MentionMenu({
           </li>
         )}
       </ul>
+      {creditsExhausted && (
+        <div className="border-t border-line px-4 py-2 text-[12.5px] text-muted">
+          Out of credits — showing recent mentions only
+        </div>
+      )}
       {users.length > 0 && loading && (
         <div className="pointer-events-none absolute right-3 top-3 text-accent">
           <Spinner size={14} />

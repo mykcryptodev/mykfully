@@ -1,16 +1,19 @@
 import { NextResponse } from "next/server";
-import { env } from "@/lib/env";
-import { clearSession } from "@/lib/session";
+import { errorResponse } from "@/lib/errors";
+import { assertSameOrigin } from "@/lib/http";
+import { clearSession, getSession, revokeSessions } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
-  await clearSession();
-  return NextResponse.json({ ok: true });
-}
-
-/** Convenience: <a href="/api/auth/logout"> logs out and lands on /login. */
-export async function GET() {
-  await clearSession();
-  return NextResponse.redirect(new URL("/login", env.appUrl));
+/** POST only (no GET: a cross-site <img src> must not be able to log users out). Revokes all sessions. */
+export async function POST(req: Request) {
+  try {
+    assertSameOrigin(req);
+    const session = await getSession();
+    if (session) await revokeSessions(session.userId);
+    await clearSession();
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    return errorResponse(e);
+  }
 }

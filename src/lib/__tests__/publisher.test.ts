@@ -6,7 +6,7 @@ import { eq, sql } from "drizzle-orm";
 import * as schema from "@/lib/db/schema";
 import type { DB } from "@/lib/db";
 import type { ThreadPost } from "@/lib/db/schema";
-import type { XClient } from "@/lib/x/types";
+import { XApiError, type XClient } from "@/lib/x/types";
 import { claimDueDrafts, MAX_ATTEMPTS, publishDraft, runDuePublishing } from "@/lib/publisher";
 
 const { drafts, users, mentionCache } = schema;
@@ -22,11 +22,11 @@ class FakeX implements XClient {
   }
   async postTweet(text: string, replyToId?: string | null) {
     const call = this.calls.length + 1;
-    if (this.alwaysFail) throw new Error("X is down");
+    if (this.alwaysFail) throw new XApiError(503, JSON.stringify({ title: "Service Unavailable" }));
     if (this.failOnCall === call) {
       this.failOnCall = null;
       this.calls.push({ text: "<failed>", replyToId: replyToId ?? null });
-      throw new Error("boom");
+      throw new XApiError(500, JSON.stringify({ title: "boom" }));
     }
     this.calls.push({ text, replyToId: replyToId ?? null });
     return { id: `t${++this.n}` };
@@ -125,11 +125,11 @@ describe("publishDraft", () => {
     x.failOnCall = 2;
 
     const r1 = await runDuePublishing(db, async () => x);
-    expect(r1).toEqual([{ id: "d1", status: "scheduled", error: "boom" }]);
+    expect(r1).toEqual([{ id: "d1", status: "scheduled", error: "[x_api_error] X API error 500: boom" }]);
     let row = await load("d1");
     expect(row.status).toBe("scheduled");
     expect(row.attempts).toBe(1);
-    expect(row.lastError).toBe("boom");
+    expect(row.lastError).toBe("[x_api_error] X API error 500: boom");
     expect(row.lockedAt).toBeNull();
     expect(row.posts.map((p) => p.tweetId ?? null)).toEqual(["t1", null, null]);
 
@@ -196,7 +196,28 @@ describe("runDuePublishing", () => {
     const row = await load("d1");
     expect(row.status).toBe("failed");
     expect(row.attempts).toBe(MAX_ATTEMPTS);
-    expect(row.lastError).toBe("X is down");
+    expect(row.lastError).toBe("[x_api_error] X API error 503: Service Unavailable");
+  });
+
+  it("never stores raw (internal) error messages", async () => {
+    await insertDraft({ id: "d1" });
+    const x = new FakeX();
+    x.postTweet = async () => {
+      throw new Error("relation \"x_tokens\" ... secret-token-param");
+    };
+    const [r] = await runDuePublishing(db, async () => x);
+    expect(r.error).toBe("[internal_error] Something went wrong");
+    expect((await load("d1")).lastError).toBe("[internal_error] Something went wrong");
+  });
+
+  it("passes the draft id as ref to getClient", async () => {
+    await insertDraft({ id: "d1" });
+    const refs: (string | undefined)[] = [];
+    await runDuePublishing(db, async (_uid, ref) => {
+      refs.push(ref);
+      return new FakeX();
+    });
+    expect(refs).toEqual(["d1"]);
   });
 
   it("isolates errors per draft and uses each draft owner's client", async () => {

@@ -2,22 +2,28 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { drafts } from "@/lib/db/schema";
 import { requireUserId } from "@/lib/session";
-import { getXClientForUser } from "@/lib/x";
-import { assertPublishable, EDITABLE_STATUSES, errorResponse, getDraft, HttpError, serializeDraft } from "@/lib/drafts";
+import { errorResponse, HttpError } from "@/lib/errors";
+import { assertSameOrigin } from "@/lib/http";
+import { limitNamed } from "@/lib/ratelimit";
+import { getMeteredXClient } from "@/lib/x/metered";
+import { assertReadyToPublish, EDITABLE_STATUSES, getDraft, serializeDraft } from "@/lib/drafts";
 import { markFailed, markPublished, publishDraft } from "@/lib/publisher";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    assertSameOrigin(req); // no body: the client sends a bare POST
     const userId = await requireUserId();
     const { id } = await params;
     const db = await getDb();
+    await limitNamed(db, "publish", userId);
 
     const current = await getDraft(db, userId, id);
     if (!current) throw new HttpError(404, "Draft not found");
-    assertPublishable(current.posts);
+    // Validate (lengths, credits) BEFORE claiming so a 402/400 never strands the draft in 'publishing'.
+    await assertReadyToPublish(db, userId, current.posts);
 
     // Atomic claim: only one caller (user or cron) can move it into 'publishing'.
     const [claimed] = await db
@@ -28,14 +34,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     if (!claimed) throw new HttpError(409, `Draft is ${current.status} and can't be published`);
 
     try {
-      const client = await getXClientForUser(userId);
+      const client = await getMeteredXClient(userId, id);
       const posts = await publishDraft(db, claimed, client);
       const row = await markPublished(db, claimed, posts);
       return Response.json({ draft: serializeDraft(row) });
     } catch (e) {
       const row = await markFailed(db, id, e, { final: true });
-      const message = e instanceof Error ? e.message : String(e);
-      return Response.json({ error: message, draft: serializeDraft(row) }, { status: 502 });
+      // Same body/status/headers as errorResponse, plus the (now failed) draft.
+      const res = errorResponse(e);
+      const body = (await res.json()) as Record<string, unknown>;
+      return Response.json({ ...body, draft: serializeDraft(row) }, { status: res.status, headers: res.headers });
     }
   } catch (e) {
     return errorResponse(e);
