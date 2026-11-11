@@ -354,7 +354,7 @@ export async function POST(req: Request, { params }: Ctx) {
   - **Commit only when the user asks.** Branch first if you're on `main`.
   - Use short imperative subjects, with an optional bulleted body.
   - Agent-authored commits end with a `Co-Authored-By:` trailer naming the model (see `git log`). Use the attribution line your harness provides.
-- **Public repo** (`github.com/mykclawd/mykfully`). Before staging, check `git status` and `git diff --cached` for:
+- **Public repo** (`github.com/mykcryptodev/mykfully`). Before staging, check `git status` and `git diff --cached` for:
   - secrets, `.env*`, `./.data`, `.next`, tsbuildinfo;
   - absolute local paths, personal info, real X ids or handles.
 
