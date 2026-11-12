@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, type DragEvent } from "react";
+import { useId, useRef, useState, type DragEvent } from "react";
 import { MAX_MEDIA_ALT_TEXT_LENGTH, type MediaAttachment } from "@/lib/media-types";
 import { mediaUrl } from "../lib/api";
 import { IconDoc, IconX } from "../ui/icons";
@@ -29,6 +29,7 @@ const TILE_ACTION = "rounded-full bg-black/70 p-1.5 text-white hover:bg-black/90
 export function PostMedia({ media, edit }: { media?: MediaAttachment[]; edit?: EditProps }) {
   const [descriptionsOpen, setDescriptionsOpen] = useState(false);
   const descriptionId = useId();
+  const toggleRef = useRef<HTMLButtonElement>(null);
   if (!media?.length) return null;
 
   const move = (id: string, direction: -1 | 1) => {
@@ -40,6 +41,12 @@ export function PostMedia({ media, edit }: { media?: MediaAttachment[]; edit?: E
       [next[index], next[other]] = [next[other], next[index]];
       return next;
     });
+  };
+
+  // Alt text saves as you type; Done (or Escape) just dismisses the panel.
+  const closeDescriptions = () => {
+    setDescriptionsOpen(false);
+    toggleRef.current?.focus();
   };
 
   return (
@@ -110,12 +117,17 @@ export function PostMedia({ media, edit }: { media?: MediaAttachment[]; edit?: E
       </div>
       {edit && media.some((item) => !item.contentType.startsWith("video/")) && (
         <div className="mt-1.5">
-          <button type="button" className="flex items-center gap-1 rounded text-[13px] text-muted hover:text-ink"
+          <button ref={toggleRef} type="button" className="flex items-center gap-1 rounded text-[13px] text-muted hover:text-ink"
             aria-expanded={descriptionsOpen} aria-controls={descriptionId} onClick={() => setDescriptionsOpen(!descriptionsOpen)}>
             <IconDoc size={14} /> Descriptions
           </button>
           {descriptionsOpen && (
-            <div id={descriptionId} className="mt-2 space-y-2 rounded-xl border border-line bg-card p-3">
+            <div id={descriptionId} className="mt-2 space-y-2 rounded-xl border border-line bg-card p-3"
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.stopPropagation();
+                closeDescriptions();
+              }}>
               {media.filter((item) => !item.contentType.startsWith("video/")).map((item) => (
                 <label key={item.id} className="block text-xs text-muted">
                   <span className="block truncate">Alt text for {item.name}</span>
@@ -128,6 +140,12 @@ export function PostMedia({ media, edit }: { media?: MediaAttachment[]; edit?: E
                     }} />
                 </label>
               ))}
+              <div className="flex justify-end pt-1">
+                <button type="button" onClick={closeDescriptions}
+                  className="h-8 rounded-full bg-accent px-4 text-[13px] font-bold text-white transition-colors hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+                  Done
+                </button>
+              </div>
             </div>
           )}
         </div>
