@@ -43,7 +43,7 @@ export function PostMedia({ media, edit }: { media?: MediaAttachment[]; edit?: E
     });
   };
 
-  // Alt text saves as you type; Done (or Escape) just dismisses the panel.
+  // Alt text saves as you type; Done (or ⌘/Ctrl+Enter, Escape) just dismisses the panel.
   const closeDescriptions = () => {
     setDescriptionsOpen(false);
     toggleRef.current?.focus();
@@ -124,7 +124,10 @@ export function PostMedia({ media, edit }: { media?: MediaAttachment[]; edit?: E
           {descriptionsOpen && (
             <div id={descriptionId} className="mt-2 space-y-2 rounded-xl border border-line bg-card p-3"
               onKeyDown={(event) => {
-                if (event.key !== "Escape") return;
+                const done = event.key === "Escape"
+                  || (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey);
+                if (!done) return;
+                event.preventDefault();
                 event.stopPropagation();
                 closeDescriptions();
               }}>
@@ -142,7 +145,8 @@ export function PostMedia({ media, edit }: { media?: MediaAttachment[]; edit?: E
               ))}
               <div className="flex justify-end pt-1">
                 <button type="button" onClick={closeDescriptions}
-                  className="h-8 rounded-full bg-accent px-4 text-[13px] font-bold text-white transition-colors hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+                  aria-keyshortcuts="Meta+Enter Control+Enter Escape" title="Done (⌘/Ctrl Enter)"
+                  className="inline-flex h-8 items-center justify-center rounded-full leading-none bg-accent px-4 text-[13px] font-bold text-white transition-colors hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
                   Done
                 </button>
               </div>
