@@ -96,7 +96,8 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 | Command | What it does |
 |---|---|
 | `pnpm install` | Installs dependencies. |
-| `pnpm dev` | Runs the Next dev server. |
+| `pnpm dev` | Runs the Next dev server with whatever `.env.local` says (PGlite when `DATABASE_URL` is empty). |
+| `pnpm dev:local` / `dev:preview` / `dev:prod` | Runs `next dev` against an explicit database. See "Choosing a database" below. |
 | `pnpm typecheck` | Runs `tsc --noEmit`. |
 | `pnpm lint` | Runs ESLint (`next/core-web-vitals` and `next/typescript`). |
 | `pnpm test` | Runs `vitest run`: 10 files and about 94 tests, about 10 seconds. |
@@ -119,14 +120,28 @@ pnpm dev
 
 > **Owner's machine:** the pulled production env lives in `.env.neon-production`, which Next does **not** load. Never source it for dev or tests, and never rename it back to `.env.local`.
 >
-> **Warning: `.env.local` may point at the real database.** `vercel env pull` and `vercel link` write `.env.local` with the **production Neon `DATABASE_URL`**. Next loads it in `dev`, `start` and `build`. `getDb()` prefers `DATABASE_URL` over PGlite, and `PGLITE_DIR` is ignored when it is set. Mock mode is **not** blocked locally, so a mock login would write a `mock-1` user to the real DB. Before running locally, check `grep -c '^DATABASE_URL=.' .env.local`. To force PGlite, run with an empty variable: `DATABASE_URL= pnpm dev`. Variables already in the shell take precedence over .env files.
+> **Warning: `.env.local` may point at a real database.** `vercel env pull` writes `.env.local` from the Vercel **Development** environment. Its `DATABASE_URL` is the shared **preview** database (`mykfully_preview`), not prod, but an older pull, or a pull with `--environment=production`, holds the **production** URL. Next loads `.env.local` in `dev`, `start` and `build`. `getDb()` prefers `DATABASE_URL` over PGlite, and `PGLITE_DIR` is ignored when it is set. Mock mode is **not** blocked locally, so a mock login writes a `mock-1` user to whichever DB is configured. Before running locally, check `grep -c '^DATABASE_URL=.' .env.local`. Variables already in the shell take precedence over .env files.
+
+#### Choosing a database
+
+`scripts/dev-db.mjs` runs `next dev` with `DATABASE_URL` set in the environment, which overrides `.env.local`. Every other variable still comes from `.env.local`.
+
+| Command | Database | Notes |
+|---|---|---|
+| `pnpm dev:local` | PGlite in `./.data/pglite` | Ignores any `DATABASE_URL` in `.env.local`. |
+| `pnpm dev:preview` | The shared preview DB (Vercel Preview env) | Runs `scripts/migrate.mjs` first, as a preview build does. Safe for mock login and unmerged migrations, but other previews share it. |
+| `pnpm dev:prod` | **Production** (Vercel Production env) | Never migrates. Forces `MOCK_X=0` and `ALLOW_MOCK_LOGIN=0`, so mock users can't land in prod. Real X login needs the prod `X_CLIENT_ID`/`X_CLIENT_SECRET`, plus the prod `TOKEN_ENCRYPTION_KEY` to read stored tokens, in `.env.local`, and `http://localhost:3000/api/auth/callback` registered on the X app. Treat everything you do here as real. |
+
+- The URL is pulled with `vercel env pull` (logged in, project linked) and cached in `.env.db.preview` / `.env.db.prod` (mode 600, gitignored by `.env*`). Each file holds only `DATABASE_URL`; the other pulled secrets are deleted.
+- Add `--refresh` to re-pull. Any other arguments go to `next dev` (e.g. `pnpm dev:preview -p 3001`).
+- Agents: never run `dev:prod` unless the user asks for it.
 
 - **Mock login:** open http://localhost:3000/api/auth/login, or click "Continue with X". Either signs you in as `@mykdemo` (id `mock-1`) with `SIGNUP_CREDITS` credits.
 - `X_CLIENT_ID` isn't needed in mock mode.
 - Set `ADMIN_X_USER_IDS=mock-1` to test `/admin` and unlimited credits.
 - **Scratch DB:** set `PGLITE_DIR=/some/tmp/dir` to use a throwaway database. To reset local data, stop the server and delete `./.data`.
 - **`pnpm start` smoke test (production mode):** mock login is refused under `NODE_ENV=production` unless `ALLOW_MOCK_LOGIN=1` is set.
-  - Use it locally only. **Never** set it on a deployment.
+  - Use it locally or on a Preview deployment (see §10 "Preview deployments"). **Never** set it on Production.
   - Prod cookies are `__Host-`/`Secure`. Curl accepts them on `localhost`.
   - `APP_URL` must match the port, or login redirects to `:3000` and the origin checks reject every mutating request.
 
@@ -340,7 +355,17 @@ export async function POST(req: Request, { params }: Ctx) {
   - **Required:** `APP_URL` (prod URL, no trailing slash), `X_CLIENT_ID`, `X_CLIENT_SECRET`, `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY`, `CRON_SECRET` and `DATABASE_URL`.
   - **Credits:** `ADMIN_X_USER_IDS`, `SIGNUP_CREDITS`, `GLOBAL_DAILY_CREDIT_CAP` and `ALLOWED_X_USER_IDS`.
   - **Optional:** `CREDIT_COST_POST`, `CREDIT_COST_POST_WITH_URL` and `CREDIT_COST_USER_READ`.
-  - **Never set** `MOCK_X` or `ALLOW_MOCK_LOGIN`.
+  - **Never set** `MOCK_X` or `ALLOW_MOCK_LOGIN` on Production.
+- **Preview deployments** run in mock mode, so PRs can be tested without real X OAuth or real posts (the preview URL's callback isn't registered on the X app):
+  - Scope Preview variables to Preview, ideally to the PR's git branch. Don't edit or re-scope Production variables.
+  - Set `MOCK_X=1` and `ALLOW_MOCK_LOGIN=1`, with fresh `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY` and `CRON_SECRET` values (never reuse prod's), and `APP_URL` set to the exact preview URL the browser uses (no trailing slash).
+  - **Preview must use a non-production `DATABASE_URL`.** Every build runs the migrations against `DATABASE_URL`, and mock login is a full auth bypass.
+    - When the Neon integration connects, it scopes its `DATABASE_URL` and `PG*`/`POSTGRES_*` vars to Production, Preview *and* Development. Left that way, every preview build migrates the prod DB.
+    - Take Preview off those integration vars, and give Preview its own `DATABASE_URL` that points at a separate database (or a Neon branch). Re-check this if the integration is ever reconnected.
+    - A preview-built migration lands before the PR merges, so test schema changes on the preview DB, never on prod.
+    - Before you add the mock flags, check the pulled value: `vercel env pull --environment=preview --git-branch=<branch>`.
+  - Keep Vercel deployment protection on for previews. With mock login, anyone who reaches the preview can sign in.
+  - The guards in invariant 11 still apply: `mockX` is off whenever `VERCEL_ENV=production`.
 - **Cron:** `vercel.json` runs `* * * * *` on `/api/cron/publish`.
   - Every-minute cron requires the **Pro plan**. On Hobby, use an external pinger that sends `Authorization: Bearer $CRON_SECRET`.
   - The handler accepts GET or POST and processes up to 10 drafts per run (`maxDuration` 60).

@@ -113,6 +113,7 @@ Open http://localhost:3000 and click **Continue with X**.
 
 - With `MOCK_X=1` you're signed in as a demo user. Posting is simulated, and @mention search uses a built-in list of accounts.
 - With `DATABASE_URL` empty, data is stored in an embedded Postgres (PGlite) in `./.data`.
+- If you deploy on Vercel, `pnpm dev:local`, `pnpm dev:preview` and `pnpm dev:prod` run the dev server against PGlite, the Preview environment's database, or the Production database. They pull the URL with `vercel env pull`. `dev:preview` migrates that database first, and `dev:prod` never migrates and turns mock mode off. See AGENTS.md, "Choosing a database".
 
 Trigger the scheduler manually:
 
