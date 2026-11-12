@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { ProductPreview } from "@/components/landing/ProductPreview";
 import { IconCalendar, IconEye, IconHash, IconPen, IconShield, IconUndo } from "@/components/ui/icons";
 import { env } from "@/lib/env";
@@ -47,7 +48,7 @@ const FEATURES: { icon: ReactNode; title: string; body: string }[] = [
   {
     icon: <IconShield size={20} />,
     title: "Your account stays yours",
-    body: "Sign in with X OAuth. We never see your password, tokens are encrypted at rest, and the code is open source.",
+    body: "Sign in with X OAuth. Tokens are encrypted at rest, and the code is open source.",
   },
 ];
 
@@ -185,10 +186,15 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
 
       <footer className="border-t border-line px-5 py-8">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 text-[13px] text-faint sm:flex-row">
-          <span>© mykfully</span>
-          <a href="https://github.com/mykcryptodev/mykfully" target="_blank" rel="noreferrer" className="hover:text-ink">
-            Open source on GitHub
-          </a>
+          <span>© mykfully · An independent open-source project, not affiliated with or endorsed by X Corp.</span>
+          <span className="flex items-center gap-4">
+            <Link href="/privacy" className="hover:text-ink">
+              Privacy
+            </Link>
+            <a href="https://github.com/mykcryptodev/mykfully" target="_blank" rel="noreferrer" className="hover:text-ink">
+              Open source on GitHub
+            </a>
+          </span>
         </div>
       </footer>
     </div>
