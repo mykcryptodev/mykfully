@@ -105,7 +105,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 -z-0 h-[520px] bg-gradient-to-b from-accent-soft to-transparent" />
           <div className="relative mx-auto max-w-3xl text-center">
             <p className="mx-auto mb-5 inline-flex items-center gap-2 rounded-full border border-line-strong bg-canvas px-3 py-1 text-[13px] text-muted">
-              Made for writing on X
+              <XLogo className="h-3 w-3" /> Made for writing on X
             </p>
             <h1 className="text-balance text-4xl font-extrabold leading-[1.08] tracking-tight sm:text-6xl">
               Write, organize and schedule your X posts.
