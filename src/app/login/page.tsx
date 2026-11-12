@@ -107,10 +107,10 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
               <XLogo className="h-3 w-3" /> Made for writing on X
             </p>
             <h1 className="text-balance text-4xl font-extrabold leading-[1.08] tracking-tight sm:text-6xl">
-              Write threads people finish reading.
+              Write, organize and schedule your X posts.
             </h1>
             <p className="mx-auto mt-5 max-w-xl text-pretty text-lg text-muted">
-              mykfully is a calm, focused editor for X. Draft your thread, see exactly how it will look, and schedule it to post while you get on with your day.
+              Draft posts and threads with a live X preview, keep every idea organized in one place, and schedule them to publish right on time.
             </p>
 
             {error && (
