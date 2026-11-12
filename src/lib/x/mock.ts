@@ -72,7 +72,7 @@ export function createMockXClient(): XClient {
       return { ...MOCK_ME };
     },
 
-    async postTweet(text, replyToId) {
+    async postTweet(text, replyToId, mediaIds) {
       state.postCalls += 1;
       const failAt = Number(process.env.MOCK_X_FAIL_AFTER ?? "");
       if (Number.isFinite(failAt) && failAt > 0 && state.postCalls === failAt) {
@@ -80,8 +80,14 @@ export function createMockXClient(): XClient {
       }
       state.nextId += BigInt(1);
       const id = state.nextId.toString();
-      console.log(`[mock-x] postTweet id=${id}${replyToId ? ` reply_to=${replyToId}` : ""}: ${JSON.stringify(text)}`);
+      console.log(`[mock-x] postTweet id=${id}${replyToId ? ` reply_to=${replyToId}` : ""}${mediaIds?.length ? ` media=${mediaIds.length}` : ""}: ${JSON.stringify(text)}`);
       return { id };
+    },
+
+    async requestMedia(request, signal) {
+      signal?.throwIfAborted();
+      if (request.type === "image" || request.type === "initialize") return { id: String(++state.nextId) };
+      return { id: request.id };
     },
 
     async lookupUsernames(usernames) {

@@ -1,4 +1,5 @@
-import { pgTable, text, timestamp, integer, jsonb, uniqueIndex, index, boolean, primaryKey, bigserial } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, jsonb, uniqueIndex, index, boolean, primaryKey, bigserial, customType } from "drizzle-orm/pg-core";
+import type { MediaAttachment, MediaContentType } from "../media-types";
 
 export const users = pgTable("users", {
   id: text("id").primaryKey(), // X user id
@@ -31,6 +32,7 @@ export type DraftStatus = "draft" | "scheduled" | "publishing" | "published" | "
 export type ThreadPost = {
   id: string; // client-generated uuid
   text: string;
+  media?: MediaAttachment[];
   tweetId?: string | null;
 };
 
@@ -51,6 +53,38 @@ export const drafts = pgTable(
   },
   (t) => [index("drafts_user_idx").on(t.userId), index("drafts_due_idx").on(t.status, t.scheduledAt)],
 );
+
+const bytea = customType<{ data: Uint8Array }>({ dataType: () => "bytea" });
+
+export const mediaAssets = pgTable(
+  "media_assets",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    contentType: text("content_type").$type<MediaContentType>().notNull(),
+    size: integer("size").notNull(),
+    uploadedSize: integer("uploaded_size").default(0).notNull(),
+    touchedAt: timestamp("touched_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("media_assets_user_touched_idx").on(t.userId, t.touchedAt)],
+);
+
+export const mediaChunks = pgTable(
+  "media_chunks",
+  {
+    mediaId: text("media_id").notNull().references(() => mediaAssets.id, { onDelete: "cascade" }),
+    byteOffset: integer("byte_offset").notNull(),
+    bytes: bytea("bytes").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.mediaId, t.byteOffset] })],
+);
+
+export const mediaUsage = pgTable("media_usage", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  totalBytes: integer("total_bytes").notNull(),
+  assetCount: integer("asset_count").notNull(),
+});
 
 // Cache of X users seen via lookup/search, for @mention autocomplete fallback
 export const mentionCache = pgTable(

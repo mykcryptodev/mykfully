@@ -396,7 +396,7 @@ export async function POST(req: Request, { params }: Ctx) {
 
 ## 12. Known limitations and TODOs
 
-- **No media uploads.** Image and video upload isn't implemented, and the `media.write` scope was dropped from `X_SCOPES`. Adding media means a new scope, an `XClient` method, metering and a CSP review.
+- **Media uploads are mock-tested only.** Files are stored as 2 MB `bytea` chunks in Postgres (`media_assets`/`media_chunks`, 128 MB and 256 files per user, unreferenced uploads pruned after 24h) and uploaded to X just before each post. Existing users must re-login to grant `media.write`; until then publishing a post with media fails with `reconnect_required`.
 - **The CSP uses `'unsafe-inline'`** for `script-src` and `style-src` (needed by Next and Tailwind). Nonce-based CSP is a TODO. Dev also adds `'unsafe-eval'`.
 - **Real X OAuth, posting and Neon are untested.** Only mock mode and PGlite were exercised end to end, so be cautious with `real.ts` and neon-specific behavior.
 - **Rate limits are fixed-window** in Postgres. Old windows are cleaned up opportunistically (1% of calls).
@@ -407,7 +407,6 @@ export async function POST(req: Request, { params }: Ctx) {
 
 ### Doc drift (the code is authoritative)
 
-- The README still says `media.write` is requested. It isn't (see `X_SCOPES`).
 - ARCHITECTURE.md says long posts are for `blue` only. `text.ts` allows `premium` and `blue`.
 - ARCHITECTURE.md shows a plain claim `UPDATE`. The real claim uses a `FOR UPDATE SKIP LOCKED` subselect and also reclaims stale rows.
 - `unauthorized()` in `session.ts` and the cron 401 return `{ error: "unauthorized" }` without going through `errorResponse`.

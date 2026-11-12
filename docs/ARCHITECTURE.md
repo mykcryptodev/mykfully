@@ -58,15 +58,21 @@ Errors are `{ error: string, code: string, ...extra }` (see `errorResponse`). Mu
   - The exact-username lookup fallback runs only on `XSearchUnavailableError` or an X 4xx other than 429.
   - Upserts the X results into the cache.
 - `GET  /api/drafts?status=draft|scheduled|published|failed` → `{ drafts: Draft[] }`. Returns at most 200, newest `updated_at` first.
-- `POST /api/drafts` `{ posts: {id,text}[] }` → `{ draft }`. Rate limit `draftCreate` (60/min). Returns 403 `draft_limit` once the user has 500 drafts.
+- `POST /api/drafts` `{ posts: { id, text, media?: { id, altText? }[] }[] }` → `{ draft }`. Rate limit `draftCreate` (60/min). Returns 403 `draft_limit` once the user has 500 drafts.
+  - A post accepts up to four static images, one GIF, or one MP4. Each attachment must be a completed upload owned by the signed-in user. Alt text is optional and has a 1,000-character limit.
 - `GET  /api/drafts/:id` → `{ draft }`
 - `PATCH /api/drafts/:id` `{ posts?, scheduledAt?: ISO|null }`. Setting `scheduledAt` sets status to `scheduled`; `null` sets it back to `draft`. Published drafts can't be edited (409). Scheduling runs the publish checks (below).
+  - For existing posts, omitting `media` keeps the current attachments and `media: []` clears them. If a failed thread is partially published, posts with a stored tweet ID keep their original attachments.
 - `DELETE /api/drafts/:id`
+- `POST /api/media` `{ name, contentType, size }` → 201 `{ attachment }`. Starts a chunked upload. Types: JPEG, PNG, WebP (5 MB), GIF (15 MB), MP4 (32 MB). Per-user quota 128 MB / 256 files; unreferenced uploads older than 24h are pruned. Rate limit `mediaStart` (20/min). 413 `media_storage_full` when the quota is used up.
+- `PATCH /api/media/:id` `{ offset, data }` (base64, 2 MB chunks, in order) → `{ uploadedSize }`. The first chunk is checked against the file signature (415 on mismatch). Retrying an identical chunk is idempotent. Rate limit `mediaChunk` (120/min).
+- `GET /api/media/:id` → the file, owner only, with `Range` support. Rate limit `mediaRead` (180/min).
+- Publishing uploads each attachment to X (`/2/media/upload`, chunked for GIF/MP4, alt text via `/2/media/metadata`) immediately before its post, inside a 40s per-post budget. Upload failures happen before `postTweet`, so they are retryable, never `publish_uncertain`. Tokens without the `media.write` scope fail with `reconnect_required`.
 - `POST /api/drafts/:id/publish`: publishes now, synchronously and metered → `{ draft }`.
   - No body. Rate limit `publish` (10/min).
   - The publish checks run **before** the draft is claimed.
   - On an X or credit failure, the draft is marked `failed`. The response is the `errorResponse` body plus `draft`, with the same status.
-- `GET  /api/credits` → `{ balance, isAdmin, costs: { post, postWithUrl, userRead }, ledger: LedgerEntry[], purchase }` (last 50 rows, ISO dates).
+- `GET  /api/credits` → `{ balance, isAdmin, costs: { post, postWithUrl, userRead, mediaUpload, mediaMetadata }, ledger: LedgerEntry[], purchase }` (last 50 rows, ISO dates).
   - `purchase` = `{ enabled, network: "base" | "base-sepolia" | null, chainId, payTo, asset, packs: { id, usd, credits }[] }`. When the feature is off it is `{ enabled: false, …null, packs: [] }`. `payTo`, `asset` and `chainId` let the client pin what it signs.
 - `POST /api/credits/purchase` `{ packId }` (optional x402 feature; see "Credit purchases"). Runtime `nodejs`, `maxDuration` 30. Rate limit `purchase` (10/min).
   - Feature off → **404**.
@@ -90,7 +96,7 @@ For admins only (`ADMIN_X_USER_IDS`). Everyone else gets **404**, so the surface
 
 `LedgerEntry` = `{ id, delta, balanceAfter, kind: signup|grant|revoke|spend|refund|purchase, reason, ref, unmetered, createdAt }`. Admin ledger views also include `actorId`.
 
-`Draft` = row of `drafts` table serialized with ISO dates.
+`Draft` is a row of the `drafts` table serialized with ISO dates. Post attachments contain `{ id, name, contentType, size, altText? }`, with file metadata supplied by the server.
 
 ## Publishing invariants
 - Claim due rows atomically: `UPDATE drafts SET status='publishing', locked_at=now() WHERE status='scheduled' AND scheduled_at <= now() RETURNING *`. Stale `publishing` rows with `locked_at` older than 10 minutes are reclaimable.
@@ -108,7 +114,7 @@ For admins only (`ADMIN_X_USER_IDS`). Everyone else gets **404**, so the surface
 - After success, bump `mention_cache.use_count` for the @mentions in the thread.
 
 ## Credits
-- 1 credit ≈ $0.001 of X spend. `CREDIT_COSTS` are `post` 15, `postWithUrl` 200, `userRead` 10 (each overridable with a `CREDIT_COST_*` env var).
+- 1 credit ≈ $0.001 of X spend. `CREDIT_COSTS` are `post` 15, `postWithUrl` 200, `userRead` 10, `mediaUpload` 0 (per X upload request), `mediaMetadata` 5 (per alt-text call) (each overridable with a `CREDIT_COST_*` env var).
 - New users get `SIGNUP_CREDITS` (default 1000) once.
 - `GLOBAL_DAILY_CREDIT_CAP` caps non-admin spend per rolling 24h (default 20000; 0 disables it).
 - Existing users with no `signup` ledger row (created before credits existed) get the signup grant on their next login.
@@ -119,10 +125,10 @@ For admins only (`ADMIN_X_USER_IDS`). Everyone else gets **404**, so the surface
   - `lookupUsernames(names)`: reserve per name, then refund the names not found.
   - `me()`: free.
 - Publish checks run on schedule (`scheduledAt` set) and on publish-now, via `assertReadyToPublish`:
-  - No empty posts.
+  - Each unposted post has text or at least one attachment.
   - Each unposted post satisfies `countPost(text, { verifiedType })`: 400 `post_too_long` with `{ index, weighted, max }`.
   - For non-admins, `balance >= estimateThreadCost(posts)` (unposted posts only), otherwise 402 `insufficient_credits` with `{ needed, balance }`.
-  - Editing the posts of an already-scheduled draft re-checks lengths only.
+  - Editing the posts of an already-scheduled draft re-checks content and lengths.
 
 ## Credit purchases (optional, x402)
 X does not support x402, so this sells the instance's **own** credits for USDC on Base. It never touches the posting path.

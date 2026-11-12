@@ -5,8 +5,12 @@ import { drafts, mentionCache, type ThreadPost } from "./db/schema";
 import type { XClient } from "./x/types";
 import type { DraftRow } from "./drafts";
 import { AmbiguousPublishError, HttpError, isFatalPublishError, toPublicError } from "./errors";
+import { loadMedia } from "./media";
+import { uploadAttachment } from "./x/upload";
 
 export const MAX_ATTEMPTS = 3;
+/** Upload budget per post. Keeps a publish attempt inside the 60s function limit. */
+export const MEDIA_UPLOAD_TIMEOUT_MS = 40_000;
 const PERSIST_ATTEMPTS = 3;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -51,9 +55,16 @@ export function extractThreadMentions(posts: ThreadPost[]): string[] {
  * Post the thread sequentially. Each post replies to the previous tweet. After every successful post,
  * its tweetId is persisted immediately (single jsonb_set UPDATE) so a crash mid-thread resumes without
  * reposting. Posts that already have a tweetId are skipped; empty posts are skipped.
+ * Attachments are uploaded to X right before their post (media IDs are short-lived). Upload failures happen
+ * before postTweet, so they are never ambiguous and the post can be retried safely.
  * Returns the posts array with tweetIds filled in.
  */
-export async function publishDraft(db: DB, draft: DraftRow, client: XClient): Promise<ThreadPost[]> {
+export async function publishDraft(
+  db: DB,
+  draft: DraftRow,
+  client: XClient,
+  opts: { uploadTimeoutMs?: number } = {},
+): Promise<ThreadPost[]> {
   const posts = draft.posts.map((p) => ({ ...p }));
   let prev: string | null = null;
   let postedAny = false;
@@ -65,8 +76,17 @@ export async function publishDraft(db: DB, draft: DraftRow, client: XClient): Pr
       continue;
     }
     const text = p.text.trim();
-    if (!text) continue;
-    const { id } = await client.postTweet(text, prev);
+    if (!text && !p.media?.length) continue;
+    let mediaIds: string[] | undefined;
+    if (p.media?.length) {
+      const signal = AbortSignal.timeout(opts.uploadTimeoutMs ?? MEDIA_UPLOAD_TIMEOUT_MS);
+      mediaIds = [];
+      for (const attachment of p.media) {
+        const { bytes, attachment: stored } = await loadMedia(db, draft.userId, attachment.id);
+        mediaIds.push(await uploadAttachment(client, bytes, stored.contentType, attachment.altText, signal));
+      }
+    }
+    const { id } = await client.postTweet(text, prev, mediaIds);
     p.tweetId = id;
     prev = id;
     postedAny = true;

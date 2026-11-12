@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { eq } from "drizzle-orm";
 import * as schema from "@/lib/db/schema";
 import type { DB } from "@/lib/db";
+import type { MediaAttachment } from "@/lib/media-types";
 
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => undefined, set: () => {} }) }));
 
@@ -27,6 +29,20 @@ afterEach(() => {
 
 async function expectStatus(p: Promise<unknown>, status: number) {
   await expect(p).rejects.toSatisfy((e) => e instanceof HttpError && e.status === status);
+}
+
+async function seedMedia(
+  userId: string,
+  contentType: MediaAttachment["contentType"] = "image/png",
+  complete = true,
+): Promise<MediaAttachment> {
+  const attachment = { id: randomUUID(), name: "file", size: 32, contentType };
+  await db.insert(schema.mediaAssets).values({
+    ...attachment,
+    userId,
+    uploadedSize: complete ? attachment.size : 0,
+  });
+  return attachment;
 }
 
 describe("drafts data access", () => {
@@ -96,6 +112,55 @@ describe("drafts data access", () => {
   });
 
   const future = () => new Date(Date.now() + 60_000).toISOString();
+
+  it("saves and schedules media-only posts with server-owned metadata", async () => {
+    const image = await seedMedia("u1");
+    const d = await createDraft(db, "u1", {
+      posts: [{ id: "a", text: "", media: [{ id: image.id, name: "forged", size: 1, altText: "  An image  " }] }],
+    });
+    expect(d.posts).toEqual([{ id: "a", text: "", media: [{ ...image, altText: "An image" }] }]);
+
+    const scheduled = await updateDraft(db, "u1", d.id, { scheduledAt: future(), posts: [{ id: "a", text: "" }] });
+    expect(scheduled.status).toBe("scheduled");
+    expect(scheduled.posts).toEqual(d.posts);
+    await expectStatus(updateDraft(db, "u1", d.id, { posts: [{ id: "a", text: "", media: [] }] }), 400);
+
+    const edited = await updateDraft(db, "u1", d.id, { posts: [{ id: "a", text: "Text only", media: [] }] });
+    expect(edited.posts).toEqual([{ id: "a", text: "Text only" }]);
+  });
+
+  it("rejects unavailable media, duplicate files, and unsupported combinations", async () => {
+    const image = await seedMedia("u1");
+    const gif = await seedMedia("u1", "image/gif");
+    const incomplete = await seedMedia("u1", "image/png", false);
+    const otherUsersImage = await seedMedia("u2");
+    for (const media of [[otherUsersImage], [incomplete], [image, image], [image, gif]]) {
+      await expectStatus(createDraft(db, "u1", { posts: [{ id: "a", text: "Post", media }] }), 400);
+    }
+    const d = await createDraft(db, "u1", { posts: [{ id: "a", text: "Post", media: [gif] }] });
+    await expectStatus(
+      updateDraft(db, "u1", d.id, { posts: [{ id: "a", text: "Post", media: [otherUsersImage] }] }),
+      400,
+    );
+    expect((await getDraft(db, "u1", d.id))?.posts).toEqual(d.posts);
+  });
+
+  it("keeps the original attachments for posts already published during a failed attempt", async () => {
+    const image = await seedMedia("u1");
+    const original = { id: "a", text: "", media: [{ ...image, altText: "Original caption" }] };
+    const d = await createDraft(db, "u1", { posts: [original, { id: "b", text: "Reply" }] });
+    await db.update(schema.drafts)
+      .set({ posts: [{ ...original, tweetId: "published" }, d.posts[1]], status: "failed" })
+      .where(eq(schema.drafts.id, d.id));
+    const updated = await updateDraft(db, "u1", d.id, {
+      posts: [{ id: "a", text: "", media: [] }, { id: "b", text: "New reply", media: [image] }],
+      scheduledAt: future(),
+    });
+    expect(updated.posts).toEqual([
+      { ...original, tweetId: "published" },
+      { id: "b", text: "New reply", media: [image] },
+    ]);
+  });
 
   it("scheduling requires enough credits for non-admins (402 with needed/balance)", async () => {
     const d = await createDraft(db, "u2", { posts: [{ id: "a", text: "x" }, { id: "b", text: "see https://example.com" }] });

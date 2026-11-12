@@ -1,6 +1,6 @@
 import type { DB } from "../db";
 import { CREDIT_COSTS, debit, postCost, refund } from "../credits";
-import { AmbiguousPublishError } from "../errors";
+import { AmbiguousPublishError, ReconnectRequiredError } from "../errors";
 import { XApiError, type XClient, type XUser } from "./types";
 
 /** Max users a single search may reserve/return (bounds the per-call charge). */
@@ -27,6 +27,8 @@ function isDefiniteRejection(e: unknown): e is XApiError {
  * Wrap an XClient so billable X calls are charged to `userId`'s credits:
  * - postTweet: debit before the call; refund only on a definite X rejection (4xx except 408). Any other
  *   failure throws AmbiguousPublishError with no refund (the post may exist, so it must not be auto-retried).
+ * - requestMedia: meter each request, including status checks. A failure is safe to retry because this
+ *   operation never creates a post. Refund only when the request was rejected or never dispatched.
  * - searchUsers / lookupUsernames: reserve the max possible user reads, refund the unused part.
  * - me(): not metered.
  * Admins are handled inside debit/refund (logged as unmetered, never charged).
@@ -53,12 +55,17 @@ export function meter(db: DB, client: XClient, userId: string, ref?: string): XC
   return {
     me: () => client.me(),
 
-    async postTweet(text, replyToId) {
+    async postTweet(text, replyToId, mediaIds, signal) {
+      signal?.throwIfAborted();
       const cost = postCost(text);
       const r = ref ?? "post";
       await debit(db, userId, cost, { ref: r, reason: "post" });
+      if (signal?.aborted) {
+        await safeRefund(db, userId, cost, r);
+        signal.throwIfAborted();
+      }
       try {
-        return await client.postTweet(text, replyToId);
+        return await client.postTweet(text, replyToId, mediaIds, signal);
       } catch (e) {
         if (isDefiniteRejection(e)) {
           await safeRefund(db, userId, cost, r);
@@ -66,6 +73,24 @@ export function meter(db: DB, client: XClient, userId: string, ref?: string): XC
         }
         console.error("[mykfully] ambiguous post failure", e instanceof XApiError ? `XApiError ${e.status}` : e instanceof Error ? e.name : typeof e);
         throw new AmbiguousPublishError();
+      }
+    },
+
+    async requestMedia(request, signal) {
+      signal?.throwIfAborted();
+      const reason = request.type === "altText" ? "media_metadata" : "media_upload";
+      const cost = request.type === "altText" ? CREDIT_COSTS.mediaMetadata : CREDIT_COSTS.mediaUpload;
+      const r = ref ?? reason;
+      if (cost > 0) await debit(db, userId, cost, { ref: r, reason });
+      if (signal?.aborted) {
+        await safeRefund(db, userId, cost, r);
+        signal.throwIfAborted();
+      }
+      try {
+        return await client.requestMedia(request, signal);
+      } catch (e) {
+        if (isDefiniteRejection(e) || e instanceof ReconnectRequiredError) await safeRefund(db, userId, cost, r);
+        throw e;
       }
     },
 

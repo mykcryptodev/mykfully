@@ -162,7 +162,7 @@ Run tests: `pnpm test`.
   
   Try it with a test X account first.
 - **Anyone can log in unless you set `ALLOWED_X_USER_IDS`, and spending is capped.** Users can only spend their credit balance, and total non-admin spend is capped per day; see [Credits](#credits-protecting-your-x-api-bill).
-- **No media uploads yet.** Image and video upload is not implemented, although the `media.write` scope is already requested.
+- **Media uploads (images, GIFs, MP4) were only tested in mock mode.** Users who signed in before media support must log in again to grant `media.write`.
 
 ## Architecture
 

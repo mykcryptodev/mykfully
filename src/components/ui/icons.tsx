@@ -33,6 +33,14 @@ export const IconAddPost = (p: P) => (
     <path d="M4 5h16M4 9h16m-8 4v7m-3.5-3.5h7" />
   </svg>
 );
+export const IconMedia = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3.5" y="3.5" width="17" height="17" rx="3" />
+    <path d="m4 17 5-5a1.4 1.4 0 0 1 2 0l2 2 2.5-2.5a1.4 1.4 0 0 1 2 0l3 3" />
+    <circle cx="15.5" cy="8.5" r="1" fill="currentColor" stroke="none" />
+  </svg>
+);
+
 export const IconX = (p: P) => (
   <svg {...base(p)}>
     <path d="M18 6 6 18M6 6l12 12" />

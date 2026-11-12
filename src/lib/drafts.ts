@@ -7,6 +7,8 @@ import { estimateThreadCost, getBalance, isAdmin } from "./credits";
 import { HttpError } from "./errors";
 import { countPost } from "./text";
 import { MAX_DRAFT_POSTS, MAX_DRAFT_POST_CODE_UNITS } from "./draft-limits";
+import { listOwnedMedia } from "./media";
+import { mediaCombinationError, MAX_MEDIA_ALT_TEXT_LENGTH, MAX_MEDIA_ATTACHMENTS, type MediaAttachment } from "./media-types";
 
 export { HttpError, errorResponse } from "./errors";
 
@@ -27,10 +29,15 @@ export const MAX_DRAFTS_PER_USER = 500;
 export const LIST_LIMIT = 200;
 export const DRAFT_STATUSES = ["draft", "scheduled", "publishing", "published", "failed"] as const;
 
-// Clients may only send id + text; any tweetId they send is stripped (zod strips unknown keys).
+// Zod strips server-owned fields such as tweetId and attachment metadata.
+const mediaInput = z.object({
+  id: z.uuid(),
+  altText: z.string().trim().max(MAX_MEDIA_ALT_TEXT_LENGTH).optional(),
+});
 const postInput = z.object({
   id: z.string().min(1).max(100),
   text: z.string().max(MAX_DRAFT_POST_CODE_UNITS),
+  media: z.array(mediaInput).max(MAX_MEDIA_ATTACHMENTS).optional(),
 });
 const postsInput = z.array(postInput).min(1).max(MAX_DRAFT_POSTS);
 
@@ -61,7 +68,7 @@ export function serializeDraft(row: DraftRow): Draft {
 
 /** Throws 400 if the thread has no publishable content or contains an empty post. */
 export function assertPublishable(posts: ThreadPost[]): void {
-  if (posts.some((p) => p.text.trim() === "" && !p.tweetId)) {
+  if (posts.some((p) => !p.text.trim() && !p.media?.length && !p.tweetId)) {
     throw new HttpError(400, "Thread contains an empty post");
   }
 }
@@ -109,17 +116,52 @@ export async function assertReadyToPublish(db: DB, userId: string, posts: Thread
   await assertCanAfford(db, userId, posts);
 }
 
-/** Merge client posts with stored ones, keeping server-side tweetIds (matched by post id). */
-function mergePosts(incoming: { id: string; text: string }[], existing: ThreadPost[]): ThreadPost[] {
+function resolvePostMedia(
+  refs: z.output<typeof mediaInput>[],
+  assets: Map<string, MediaAttachment>,
+): MediaAttachment[] {
+  const ids = new Set<string>();
+  const media = refs.map(({ id, altText }) => {
+    const asset = assets.get(id);
+    if (!asset) throw new HttpError(400, "An attachment is unavailable", { code: "invalid_media" });
+    if (ids.has(id)) throw new HttpError(400, "A post cannot attach the same file twice", { code: "invalid_media" });
+    ids.add(id);
+    return altText ? { ...asset, altText } : asset;
+  });
+  const combinationError = mediaCombinationError(media);
+  if (combinationError) throw new HttpError(400, combinationError, { code: "invalid_media" });
+  return media;
+}
+
+/** Resolve owned media and keep the server's tweetIds and published attachments. */
+async function mergePosts(
+  db: DB,
+  userId: string,
+  incoming: z.output<typeof postsInput>,
+  existing: ThreadPost[],
+): Promise<ThreadPost[]> {
   const ids = new Set<string>();
   for (const p of incoming) {
     if (ids.has(p.id)) throw new HttpError(400, `Duplicate post id ${p.id}`);
     ids.add(p.id);
   }
   const byId = new Map(existing.map((p) => [p.id, p]));
+  const mediaIds = new Set<string>();
+  for (const p of incoming) {
+    if (byId.get(p.id)?.tweetId) continue;
+    for (const ref of p.media ?? []) mediaIds.add(ref.id);
+  }
+  const assets = mediaIds.size ? await listOwnedMedia(db, userId, [...mediaIds]) : [];
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
   return incoming.map((p) => {
-    const tweetId = byId.get(p.id)?.tweetId ?? null;
-    return tweetId ? { id: p.id, text: p.text, tweetId } : { id: p.id, text: p.text };
+    const old = byId.get(p.id);
+    const media = old?.tweetId || !p.media ? old?.media : resolvePostMedia(p.media, assetsById);
+    return {
+      id: p.id,
+      text: p.text,
+      ...(media?.length ? { media } : {}),
+      ...(old?.tweetId ? { tweetId: old.tweetId } : {}),
+    };
   });
 }
 
@@ -146,9 +188,10 @@ export async function createDraft(db: DB, userId: string, input: unknown): Promi
   if (Number(n) >= MAX_DRAFTS_PER_USER) {
     throw new HttpError(403, `Draft limit reached (${MAX_DRAFTS_PER_USER}). Delete some drafts first.`, { code: "draft_limit" });
   }
+  const merged = await mergePosts(db, userId, posts, []);
   const [row] = await db
     .insert(drafts)
-    .values({ id: randomUUID(), userId, posts: mergePosts(posts, []), status: "draft" })
+    .values({ id: randomUUID(), userId, posts: merged, status: "draft" })
     .returning();
   return row;
 }
@@ -162,7 +205,7 @@ export async function updateDraft(db: DB, userId: string, id: string, input: unk
   }
 
   const set: Partial<typeof drafts.$inferInsert> = { updatedAt: new Date() };
-  const posts = patch.posts ? mergePosts(patch.posts, current.posts) : current.posts;
+  const posts = patch.posts ? await mergePosts(db, userId, patch.posts, current.posts) : current.posts;
   if (patch.posts) set.posts = posts;
 
   if (patch.scheduledAt !== undefined) {

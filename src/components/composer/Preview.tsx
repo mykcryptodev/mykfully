@@ -6,6 +6,7 @@ import type { Me, ThreadPost } from "../lib/api";
 import { Avatar } from "../ui/Avatar";
 import { VerifiedBadge } from "../ui/VerifiedBadge";
 import { IconX, XBookmark, XLike, XReply, XRepost, XShare, XViews } from "../ui/icons";
+import { PostMedia } from "./PostMedia";
 
 const MOBILE_WIDTH = 393;
 const ACTIONS = [
@@ -87,9 +88,11 @@ const PreviewPost = memo(function PreviewPost({
           <span className="shrink-0 text-muted">now</span>
           {number && <span className="ml-auto shrink-0 pl-1 text-xs tabular-nums text-muted">{number}</span>}
         </div>
-        <div className="tweet-text mt-0.5 text-ink">
-          {text ? <Linkified text={shownText} /> : <span className="italic text-muted">Empty post</span>}
-        </div>
+        {(text || !post.media?.length) && (
+          <div className="tweet-text mt-0.5 text-ink">
+            {text ? <Linkified text={shownText} /> : <span className="italic text-muted">Empty post</span>}
+          </div>
+        )}
         {collapsedText !== null && (
           <button
             type="button"
@@ -100,6 +103,7 @@ const PreviewPost = memo(function PreviewPost({
             {expanded ? "Show less" : "Show more"}
           </button>
         )}
+        <PostMedia media={post.media} />
         <div aria-hidden className="mt-3 flex max-w-[425px] items-center justify-between text-muted">
           {ACTIONS.map(({ id, Icon }) => <Icon key={id} size={17} />)}
         </div>

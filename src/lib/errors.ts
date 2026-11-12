@@ -43,8 +43,8 @@ export class RateLimitedError extends Error {
 /** The user's X authorization is gone (refresh token revoked/expired) — they must log in again. */
 export class ReconnectRequiredError extends Error {
   readonly code = "reconnect_required";
-  constructor() {
-    super("Your X connection expired. Reconnect X to keep publishing.");
+  constructor(message = "Your X connection expired. Reconnect X to keep publishing.") {
+    super(message);
     this.name = "ReconnectRequiredError";
   }
 }

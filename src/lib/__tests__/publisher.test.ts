@@ -6,13 +6,15 @@ import { eq, sql } from "drizzle-orm";
 import * as schema from "@/lib/db/schema";
 import type { DB } from "@/lib/db";
 import type { ThreadPost } from "@/lib/db/schema";
-import { XApiError, type XClient } from "@/lib/x/types";
+import { XApiError, type XClient, type XMediaRequest, type XMediaResponse } from "@/lib/x/types";
 import { claimDueDrafts, MAX_ATTEMPTS, publishDraft, runDuePublishing } from "@/lib/publisher";
 
 const { drafts, users, mentionCache } = schema;
 
 class FakeX implements XClient {
-  calls: { text: string; replyToId: string | null }[] = [];
+  calls: { text: string; replyToId: string | null; mediaIds?: string[] }[] = [];
+  mediaRequests: XMediaRequest[] = [];
+  mediaError: Error | null = null;
   private n = 0;
   failOnCall: number | null = null; // 1-based index of the postTweet call that throws (once)
   alwaysFail = false;
@@ -20,7 +22,14 @@ class FakeX implements XClient {
   async me() {
     return { id: "u1", username: "me", name: "Me" };
   }
-  async postTweet(text: string, replyToId?: string | null) {
+  async requestMedia(request: XMediaRequest): Promise<XMediaResponse> {
+    this.mediaRequests.push(request);
+    if (this.mediaError) throw this.mediaError;
+    if (request.type === "image" || request.type === "initialize") return { id: String(1000 + this.mediaRequests.length) };
+    if (request.type === "finalize") return { id: request.id, processing_info: { state: "succeeded" } };
+    return {};
+  }
+  async postTweet(text: string, replyToId?: string | null, mediaIds?: string[]) {
     const call = this.calls.length + 1;
     if (this.alwaysFail) throw new XApiError(503, JSON.stringify({ title: "Service Unavailable" }));
     if (this.failOnCall === call) {
@@ -28,7 +37,7 @@ class FakeX implements XClient {
       this.calls.push({ text: "<failed>", replyToId: replyToId ?? null });
       throw new XApiError(500, JSON.stringify({ title: "boom" }));
     }
-    this.calls.push({ text, replyToId: replyToId ?? null });
+    this.calls.push({ text, replyToId: replyToId ?? null, ...(mediaIds?.length ? { mediaIds } : {}) });
     return { id: `t${++this.n}` };
   }
   async lookupUsernames() {
@@ -145,6 +154,57 @@ describe("publishDraft", () => {
       { text: "two", replyToId: "t1" },
       { text: "three", replyToId: "t2" },
     ]);
+  });
+});
+
+describe("publishDraft with media", () => {
+  const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+  async function seedImage(id: string, userId = "u1") {
+    await db.insert(schema.mediaAssets).values({
+      id, userId, name: "pic.png", contentType: "image/png", size: PNG.length, uploadedSize: PNG.length,
+    });
+    await db.insert(schema.mediaChunks).values({ mediaId: id, byteOffset: 0, bytes: PNG });
+    return { id, name: "pic.png", contentType: "image/png" as const, size: PNG.length };
+  }
+
+  it("uploads attachments, sets alt text, and attaches media ids to the post", async () => {
+    const image = await seedImage("11111111-1111-4111-8111-111111111111");
+    const draft = await insertDraft({
+      id: "d1",
+      status: "publishing",
+      posts: [{ id: "a", text: "", media: [{ ...image, altText: "A cat" }] }, { id: "b", text: "reply" }],
+    });
+    const x = new FakeX();
+    await publishDraft(db, draft, x);
+    expect(x.mediaRequests.map((r) => r.type)).toEqual(["image", "altText"]);
+    const upload = x.mediaRequests[0] as Extract<XMediaRequest, { type: "image" }>;
+    expect(new Uint8Array(await upload.media.arrayBuffer())).toEqual(PNG);
+    expect(x.mediaRequests[1]).toMatchObject({ type: "altText", id: "1001", text: "A cat" });
+    expect(x.calls).toEqual([
+      { text: "", replyToId: null, mediaIds: ["1001"] },
+      { text: "reply", replyToId: "t1" },
+    ]);
+    expect((await load("d1")).posts.map((p) => p.tweetId)).toEqual(["t1", "t2"]);
+  });
+
+  it("an upload failure happens before posting, so the draft is retried, not marked uncertain", async () => {
+    const image = await seedImage("22222222-2222-4222-8222-222222222222");
+    await insertDraft({ id: "d1", posts: [{ id: "a", text: "one" }, { id: "b", text: "two", media: [image] }] });
+    const x = new FakeX();
+    x.mediaError = new XApiError(503, "{}");
+    const [r] = await runDuePublishing(db, async () => x);
+    expect(r.status).toBe("scheduled");
+    expect((await load("d1")).posts.map((p) => p.tweetId ?? null)).toEqual(["t1", null]);
+
+    x.mediaError = null;
+    expect(await runDuePublishing(db, async () => x)).toEqual([{ id: "d1", status: "published" }]);
+    expect(x.posted.map((c) => c.text)).toEqual(["one", "two"]);
+  });
+
+  it("never loads another user's media", async () => {
+    const image = await seedImage("33333333-3333-4333-8333-333333333333", "u2");
+    const draft = await insertDraft({ id: "d1", status: "publishing", posts: [{ id: "a", text: "x", media: [image] }] });
+    await expect(publishDraft(db, draft, new FakeX())).rejects.toMatchObject({ status: 404 });
   });
 });
 

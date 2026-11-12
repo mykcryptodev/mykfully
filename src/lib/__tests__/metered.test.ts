@@ -8,7 +8,7 @@ import type { DB } from "@/lib/db";
 import type { ThreadPost } from "@/lib/db/schema";
 import { getBalance, grant, listLedger } from "@/lib/credits";
 import { AmbiguousPublishError, InsufficientCreditsError, ReconnectRequiredError } from "@/lib/errors";
-import { XApiError, type XClient, type XUser } from "@/lib/x/types";
+import { XApiError, type XClient, type XMediaRequest, type XMediaResponse, type XUser } from "@/lib/x/types";
 import { meter } from "@/lib/x/metered";
 import { runDuePublishing } from "@/lib/publisher";
 import { updateDraft } from "@/lib/drafts";
@@ -28,6 +28,13 @@ class FakeX implements XClient {
     if (this.postError) throw this.postError;
     this.posted.push({ text, replyToId: replyToId ?? null });
     return { id: `t${++this.n}` };
+  }
+  mediaError: Error | null = null;
+  mediaCalls = 0;
+  async requestMedia(request: XMediaRequest): Promise<XMediaResponse> {
+    this.mediaCalls++;
+    if (this.mediaError) throw this.mediaError;
+    return request.type === "image" ? { id: "123" } : {};
   }
   async lookupUsernames(names: string[]) {
     return fakeUsers(names.length).slice(0, 1);
@@ -116,6 +123,41 @@ describe("meter: postTweet", () => {
     expect(await getBalance(db, "admin")).toBe(0);
     const [row] = await listLedger(db, "admin", 1);
     expect([row.delta, row.unmetered]).toEqual([-15, true]);
+  });
+});
+
+describe("meter: requestMedia", () => {
+  afterEach(() => {
+    delete process.env.CREDIT_COST_MEDIA_UPLOAD;
+  });
+
+  it("charges alt text metadata and refunds a definite rejection", async () => {
+    await grant(db, "admin", "u1", 100, null);
+    const x = new FakeX();
+    const m = meter(db, x, "u1");
+    await m.requestMedia({ type: "altText", id: "1", text: "hi" });
+    expect(await getBalance(db, "u1")).toBe(95);
+    x.mediaError = new XApiError(400, "{}");
+    await expect(m.requestMedia({ type: "altText", id: "1", text: "hi" })).rejects.toBeInstanceOf(XApiError);
+    expect(await getBalance(db, "u1")).toBe(95);
+  });
+
+  it("uploads are free by default; a configured cost is charged and kept on ambiguous failure", async () => {
+    await grant(db, "admin", "u1", 100, null);
+    const x = new FakeX();
+    await meter(db, x, "u1").requestMedia({ type: "image", media: new Blob(["x"]) });
+    expect(await getBalance(db, "u1")).toBe(100);
+
+    process.env.CREDIT_COST_MEDIA_UPLOAD = "3";
+    x.mediaError = new XApiError(503, "{}");
+    await expect(meter(db, x, "u1").requestMedia({ type: "image", media: new Blob(["x"]) })).rejects.toBeInstanceOf(XApiError);
+    expect(await getBalance(db, "u1")).toBe(97);
+  });
+
+  it("refuses media requests without credits before calling X", async () => {
+    const x = new FakeX();
+    await expect(meter(db, x, "u1").requestMedia({ type: "altText", id: "1", text: "hi" })).rejects.toBeInstanceOf(InsufficientCreditsError);
+    expect(x.mediaCalls).toBe(0);
   });
 });
 

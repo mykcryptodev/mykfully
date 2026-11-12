@@ -15,7 +15,13 @@ export async function GET() {
     return Response.json({
       balance,
       isAdmin: isAdmin(userId),
-      costs: { post: CREDIT_COSTS.post, postWithUrl: CREDIT_COSTS.postWithUrl, userRead: CREDIT_COSTS.userRead },
+      costs: {
+        post: CREDIT_COSTS.post,
+        postWithUrl: CREDIT_COSTS.postWithUrl,
+        userRead: CREDIT_COSTS.userRead,
+        mediaUpload: CREDIT_COSTS.mediaUpload,
+        mediaMetadata: CREDIT_COSTS.mediaMetadata,
+      },
       ledger: ledger.map((r) => serializeLedger(r)),
       // Optional x402 credit purchases; `enabled: false` (and no packs) unless configured.
       purchase: publicPurchaseInfo(),

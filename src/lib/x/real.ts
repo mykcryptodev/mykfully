@@ -1,4 +1,5 @@
-import { XApiError, XSearchUnavailableError, type XClient, type XTokenSet, type XUser } from "./types";
+import { ReconnectRequiredError } from "../errors";
+import { XApiError, XSearchUnavailableError, type XClient, type XMediaRequest, type XMediaResponse, type XTokenSet, type XUser } from "./types";
 
 export const X_API_BASE = "https://api.x.com/2";
 export const X_TOKEN_URL = "https://api.x.com/2/oauth2/token";
@@ -131,17 +132,54 @@ export function mapUser(u: RawUser): XUser {
   };
 }
 
-export function createRealXClient(accessToken: string): XClient {
+function mediaRequest(request: XMediaRequest): [string, RequestInit?] {
+  const upload = "/media/upload";
+  switch (request.type) {
+    case "image": {
+      const body = new FormData();
+      body.set("media", request.media);
+      body.set("media_category", "tweet_image");
+      return [upload, { method: "POST", body }];
+    }
+    case "initialize":
+      return [`${upload}/initialize`, {
+        method: "POST",
+        body: JSON.stringify({
+          media_category: request.contentType === "image/gif" ? "tweet_gif" : "tweet_video",
+          media_type: request.contentType,
+          total_bytes: request.size,
+        }),
+      }];
+    case "append": {
+      const body = new FormData();
+      body.set("media", request.media);
+      body.set("segment_index", String(request.index));
+      return [`${upload}/${encodeURIComponent(request.id)}/append`, { method: "POST", body }];
+    }
+    case "finalize":
+      return [`${upload}/${encodeURIComponent(request.id)}/finalize`, { method: "POST" }];
+    case "status":
+      return [`${upload}?command=STATUS&media_id=${encodeURIComponent(request.id)}`];
+    case "altText":
+      return ["/media/metadata", {
+        method: "POST",
+        body: JSON.stringify({ id: request.id, metadata: { alt_text: { text: request.text } } }),
+      }];
+  }
+}
+
+export function createRealXClient(accessToken: string, scope?: string | null): XClient {
   async function call(path: string, init: RequestInit = {}): Promise<{ status: number; body: string }> {
+    const timeout = AbortSignal.timeout(API_TIMEOUT_MS);
     const res = await fetch(`${X_API_BASE}${path}`, {
       ...init,
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...(typeof init.body === "string" ? { "Content-Type": "application/json" } : {}),
         ...(init.headers ?? {}),
       },
       cache: "no-store",
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+      signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
     });
     return { status: res.status, body: await res.text() };
   }
@@ -158,11 +196,24 @@ export function createRealXClient(accessToken: string): XClient {
       return mapUser(r.data);
     },
 
-    async postTweet(text, replyToId) {
-      const payload: Record<string, unknown> = { text };
+    async postTweet(text, replyToId, mediaIds, signal) {
+      const payload: Record<string, unknown> = {};
+      if (text) payload.text = text;
       if (replyToId) payload.reply = { in_reply_to_tweet_id: replyToId };
-      const r = await json<{ data: { id: string } }>(`/tweets`, { method: "POST", body: JSON.stringify(payload) });
+      if (mediaIds?.length) payload.media = { media_ids: mediaIds };
+      const r = await json<{ data?: { id?: string } }>(`/tweets`, { method: "POST", body: JSON.stringify(payload), signal });
+      if (typeof r.data?.id !== "string" || !r.data.id) throw new Error("X did not return a post ID");
       return { id: r.data.id };
+    },
+
+    async requestMedia(request, signal) {
+      if (scope && !scope.split(/\s+/).includes("media.write")) {
+        throw new ReconnectRequiredError("Reconnect X to grant permission to publish media.");
+      }
+      const [path, init] = mediaRequest(request);
+      const result = await json<{ data?: XMediaResponse; errors?: unknown[] }>(path, { ...init, signal });
+      if (result.errors?.length) throw new XApiError(502, '{"title":"X could not complete the media request"}');
+      return result.data ?? {};
     },
 
     async lookupUsernames(usernames) {
