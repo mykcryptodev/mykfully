@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { ProductPreview } from "@/components/landing/ProductPreview";
 import { IconCalendar, IconEye, IconHash, IconPen, IconShield, IconUndo } from "@/components/ui/icons";
 import { env } from "@/lib/env";
@@ -47,12 +48,12 @@ const FEATURES: { icon: ReactNode; title: string; body: string }[] = [
   {
     icon: <IconShield size={20} />,
     title: "Your account stays yours",
-    body: "Sign in with X OAuth. We never see your password, tokens are encrypted at rest, and the code is open source.",
+    body: "You authorize mykfully on x.com through X's official OAuth flow. Access tokens are encrypted at rest, and the code is open source.",
   },
 ];
 
 const STEPS = [
-  { title: "Sign in with X", body: "One click. No password, no email form." },
+  { title: "Connect your X account", body: "Authorize mykfully on x.com with X's official OAuth." },
   { title: "Write your thread", body: "Draft, preview and polish in a calm, focused editor." },
   { title: "Schedule it", body: "Choose a time. mykfully posts it for you." },
 ];
@@ -104,7 +105,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 -z-0 h-[520px] bg-gradient-to-b from-accent-soft to-transparent" />
           <div className="relative mx-auto max-w-3xl text-center">
             <p className="mx-auto mb-5 inline-flex items-center gap-2 rounded-full border border-line-strong bg-canvas px-3 py-1 text-[13px] text-muted">
-              <XLogo className="h-3 w-3" /> Made for writing on X
+              Made for writing on X
             </p>
             <h1 className="text-balance text-4xl font-extrabold leading-[1.08] tracking-tight sm:text-6xl">
               Write, organize and schedule your X posts.
@@ -185,10 +186,15 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
 
       <footer className="border-t border-line px-5 py-8">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 text-[13px] text-faint sm:flex-row">
-          <span>© mykfully</span>
-          <a href="https://github.com/mykcryptodev/mykfully" target="_blank" rel="noreferrer" className="hover:text-ink">
-            Open source on GitHub
-          </a>
+          <span>© mykfully · An independent open-source project, not affiliated with or endorsed by X Corp.</span>
+          <span className="flex items-center gap-4">
+            <Link href="/privacy" className="hover:text-ink">
+              Privacy
+            </Link>
+            <a href="https://github.com/mykcryptodev/mykfully" target="_blank" rel="noreferrer" className="hover:text-ink">
+              Open source on GitHub
+            </a>
+          </span>
         </div>
       </footer>
     </div>

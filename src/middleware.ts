@@ -30,10 +30,18 @@ export async function middleware(req: NextRequest) {
 
   if (await isAuthed(req, secret)) return NextResponse.next();
   const url = req.nextUrl.clone();
-  const next = req.nextUrl.pathname + req.nextUrl.search;
-  url.pathname = "/login";
-  url.search = next && next !== "/" ? `?next=${encodeURIComponent(next)}` : "";
-  const res = NextResponse.redirect(url);
+  let res: NextResponse;
+  if (req.nextUrl.pathname === "/") {
+    // Signed-out visitors see the landing page at the root URL itself, rather than being
+    // bounced to /login (a redirect-to-login on a bare domain looks phishy to Safe Browsing).
+    url.pathname = "/login";
+    res = NextResponse.rewrite(url);
+  } else {
+    const next = req.nextUrl.pathname + req.nextUrl.search;
+    url.pathname = "/login";
+    url.search = `?next=${encodeURIComponent(next)}`;
+    res = NextResponse.redirect(url);
+  }
   if (req.cookies.has(SESSION_COOKIE)) {
     // drop invalid/expired cookie; __Host- cookies can only be cleared with matching attributes
     res.cookies.set(SESSION_COOKIE, "", { path: "/", secure: IS_PROD, httpOnly: true, sameSite: "lax", maxAge: 0 });
@@ -43,5 +51,5 @@ export async function middleware(req: NextRequest) {
 
 export const config = {
   // Everything except /login, /api/**, Next internals, and real static asset extensions.
-  matcher: ["/((?!login(?:/|$)|api/|_next/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|txt|woff2?)$).*)"],
+  matcher: ["/((?!login(?:/|$)|privacy(?:/|$)|api/|_next/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|txt|woff2?)$).*)"],
 };
