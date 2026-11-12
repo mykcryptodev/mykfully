@@ -48,7 +48,7 @@ const FEATURES: { icon: ReactNode; title: string; body: string }[] = [
   {
     icon: <IconShield size={20} />,
     title: "Your account stays yours",
-    body: "Sign in with X OAuth. We never see your password, tokens are encrypted at rest, and the code is open source.",
+    body: "Sign in with X OAuth. Tokens are encrypted at rest, and the code is open source.",
   },
 ];
 
