@@ -5,6 +5,7 @@ import { creditLedger, users, type CreditKind, type ThreadPost } from "./db/sche
 import { env, intEnv } from "./env";
 import { CreditCapReachedError, InsufficientCreditsError } from "./errors";
 import { hasUrl } from "./text";
+import { estimateMediaCost } from "./x/media-policy";
 
 /** 1 credit ≈ $0.001 of X API spend. Override with CREDIT_COST_* env vars if X changes pricing. */
 export const CREDIT_COSTS = {
@@ -20,6 +21,12 @@ export const CREDIT_COSTS = {
   get ownedRead() {
     return intEnv("CREDIT_COST_OWNED_READ", 1);
   },
+  get mediaUpload() {
+    return intEnv("CREDIT_COST_MEDIA_UPLOAD", 0);
+  },
+  get mediaMetadata() {
+    return intEnv("CREDIT_COST_MEDIA_METADATA", 5);
+  },
 };
 
 export function isAdmin(userId: string): boolean {
@@ -30,9 +37,11 @@ export function postCost(text: string): number {
   return hasUrl(text) ? CREDIT_COSTS.postWithUrl : CREDIT_COSTS.post;
 }
 
-/** Credits needed to publish the not-yet-posted, non-empty posts of a thread. */
-export function estimateThreadCost(posts: Pick<ThreadPost, "text" | "tweetId">[]): number {
-  return posts.filter((p) => !p.tweetId && p.text.trim()).reduce((sum, p) => sum + postCost(p.text), 0);
+/** Maximum credits needed to publish the remaining posts in one attempt. */
+export function estimateThreadCost(posts: Pick<ThreadPost, "text" | "tweetId" | "media">[]): number {
+  return posts
+    .filter((p) => !p.tweetId && (p.text.trim() || p.media?.length))
+    .reduce((sum, p) => sum + postCost(p.text) + estimateMediaCost(p.media, CREDIT_COSTS), 0);
 }
 
 /** db.execute() returns `{ rows }` on PGlite and neon-http (and sometimes a bare array); normalize. */

@@ -43,7 +43,7 @@ export function Logo() {
 
 function previewText(d: Draft): string {
   const first = d.posts.find((p) => p.text.trim())?.text.trim();
-  return first ?? "";
+  return first ?? d.posts.find((p) => p.media?.length)?.media?.[0]?.name ?? "";
 }
 
 export function Sidebar() {

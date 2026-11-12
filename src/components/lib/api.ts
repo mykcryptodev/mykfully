@@ -1,9 +1,11 @@
 "use client";
 
 import type { XUser } from "@/lib/x/types";
+import { MEDIA_CHUNK_SIZE, type MediaAttachment } from "@/lib/media-types";
 
 export type DraftStatus = "draft" | "scheduled" | "publishing" | "published" | "failed";
-export type ThreadPost = { id: string; text: string; tweetId?: string | null };
+export type ThreadPost = { id: string; text: string; media?: MediaAttachment[]; tweetId?: string | null };
+type DraftPostInput = { id: string; text: string; media?: Pick<MediaAttachment, "id" | "altText">[] };
 
 export type Draft = {
   id: string;
@@ -44,7 +46,13 @@ export type LedgerEntry = {
   createdAt: string;
 };
 
-export type CreditCosts = { post: number; postWithUrl: number; userRead: number };
+export type CreditCosts = {
+  post: number;
+  postWithUrl: number;
+  userRead: number;
+  mediaUpload: number;
+  mediaMetadata: number;
+};
 
 /** Optional "buy credits with USDC" (x402) feature, from GET /api/credits. `enabled: false` unless the instance configured it. */
 export type PurchaseInfo = {
@@ -121,6 +129,55 @@ export async function apiFetch<T>(url: string, init: RequestInit & { json?: unkn
   return data as T;
 }
 
+export function mediaUrl(id: string): string {
+  return `/api/media/${encodeURIComponent(id)}`;
+}
+
+function encodeMediaChunk(chunk: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      resolve(dataUrl.slice(dataUrl.indexOf(",") + 1));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(chunk);
+  });
+}
+
+async function uploadMedia(
+  file: File,
+  onProgress?: (percentage: number) => void,
+  signal?: AbortSignal,
+): Promise<MediaAttachment> {
+  const { attachment } = await apiFetch<{ attachment: MediaAttachment }>("/api/media", {
+    method: "POST",
+    json: { name: file.name, contentType: file.type, size: file.size },
+    signal,
+  });
+  for (let offset = 0; offset < file.size; offset += MEDIA_CHUNK_SIZE) {
+    signal?.throwIfAborted();
+    const chunk = file.slice(offset, offset + MEDIA_CHUNK_SIZE);
+    const data = await encodeMediaChunk(chunk);
+    const sendChunk = () => apiFetch<{ uploadedSize: number }>(mediaUrl(attachment.id), {
+      method: "PATCH",
+      json: { offset, data },
+      signal,
+    });
+    const { uploadedSize } = await sendChunk().catch((error: unknown) => {
+      if (signal?.aborted || !(error instanceof TypeError || (error instanceof ApiError && error.status >= 500))) {
+        throw error;
+      }
+      return sendChunk();
+    });
+    if (uploadedSize !== offset + chunk.size) {
+      throw new ApiError(409, "The upload was interrupted. Try attaching the file again.");
+    }
+    onProgress?.(Math.round((uploadedSize / file.size) * 100));
+  }
+  return attachment;
+}
+
 export const api = {
   me: () => apiFetch<{ user: Me }>("/api/me"),
   setTimezone: (timezone: string) => apiFetch<{ user: Me }>("/api/me", { method: "PATCH", json: { timezone } }),
@@ -128,12 +185,13 @@ export const api = {
   listDrafts: (status?: DraftStatus) =>
     apiFetch<{ drafts: Draft[] }>(status ? `/api/drafts?status=${status}` : "/api/drafts"),
   getDraft: (id: string) => apiFetch<{ draft: Draft }>(`/api/drafts/${id}`),
-  createDraft: (posts: { id: string; text: string }[]) =>
+  createDraft: (posts: DraftPostInput[]) =>
     apiFetch<{ draft: Draft }>("/api/drafts", { method: "POST", json: { posts } }),
-  updateDraft: (id: string, patch: { posts?: { id: string; text: string }[]; scheduledAt?: string | null }) =>
+  updateDraft: (id: string, patch: { posts?: DraftPostInput[]; scheduledAt?: string | null }) =>
     apiFetch<{ draft: Draft }>(`/api/drafts/${id}`, { method: "PATCH", json: patch }),
   deleteDraft: (id: string) => apiFetch<{ ok: true }>(`/api/drafts/${id}`, { method: "DELETE" }),
   publish: (id: string) => apiFetch<{ draft: Draft }>(`/api/drafts/${id}/publish`, { method: "POST" }),
+  uploadMedia,
   searchMentions: (q: string, signal?: AbortSignal) =>
     apiFetch<{ users: XUser[]; source: string; creditsExhausted?: boolean }>(
       `/api/mentions/search?q=${encodeURIComponent(q)}`,

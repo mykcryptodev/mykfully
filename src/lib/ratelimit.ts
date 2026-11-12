@@ -11,6 +11,9 @@ export const LIMITS = {
   callback: { max: 20, windowSec: 60 },
   admin: { max: 60, windowSec: 60 },
   purchase: { max: 10, windowSec: 60 },
+  mediaStart: { max: 20, windowSec: 60 },
+  mediaChunk: { max: 120, windowSec: 60 },
+  mediaRead: { max: 180, windowSec: 60 },
 } as const;
 
 /**

@@ -4,6 +4,8 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { countPost, hasUrl, maxLengthFor } from "@/lib/text";
 import { MAX_DRAFT_POSTS, MAX_DRAFT_POST_CODE_UNITS } from "@/lib/draft-limits";
+import { mediaCombinationError, type MediaAttachment } from "@/lib/media-types";
+import { estimateMediaCost } from "@/lib/x/media-policy";
 import {
   api,
   ApiError,
@@ -38,6 +40,7 @@ import {
 } from "../ui/icons";
 import { CommandBar, type ComposerCommand } from "./CommandBar";
 import { PostEditor } from "./PostEditor";
+import type { AttachmentDrag } from "./PostMedia";
 import { PreviewPanel } from "./Preview";
 import { SchedulePopover } from "./SchedulePopover";
 
@@ -51,13 +54,14 @@ type FocusReq = {
 
 const newPost = (text = ""): ThreadPost => ({ id: uuid(), text });
 
-const DEFAULT_COSTS: CreditCosts = { post: 15, postWithUrl: 200, userRead: 10 };
+const DEFAULT_COSTS: CreditCosts = { post: 15, postWithUrl: 200, userRead: 10, mediaUpload: 0, mediaMetadata: 5 };
+const postHasContent = (post: ThreadPost) => !!(post.text.trim() || post.media?.length);
 
 /** Same rules as the server's estimateThreadCost: unposted, non-empty posts; links cost more. */
 function estimateCost(posts: ThreadPost[], costs: CreditCosts): number {
   return posts
-    .filter((p) => !p.tweetId && p.text.trim())
-    .reduce((sum, p) => sum + (hasUrl(p.text) ? costs.postWithUrl : costs.post), 0);
+    .filter((p) => !p.tweetId && postHasContent(p))
+    .reduce((sum, p) => sum + (hasUrl(p.text) ? costs.postWithUrl : costs.post) + estimateMediaCost(p.media ?? [], costs), 0);
 }
 
 /** "[code] message" → { code, message } (lastError prefixes written by the scheduler). */
@@ -65,7 +69,9 @@ function parseLastError(err: string): { code: string | null; message: string } {
   const m = err.match(/^\[([a-z_]+)\]\s*([\s\S]*)$/);
   return m ? { code: m[1], message: m[2] } : { code: null, message: err };
 }
-const payload = (posts: ThreadPost[]) => posts.map(({ id, text }) => ({ id, text }));
+const payload = (posts: ThreadPost[]) => posts.map(({ id, text, media }) => ({
+  id, text, media: (media ?? []).map(({ id, altText }) => ({ id, altText })),
+}));
 
 function usePersistentFlag(key: string, initial: boolean) {
   const [v, setV] = useState(initial);
@@ -126,6 +132,7 @@ export function Composer({
   const [confirm, setConfirm] = useState<null | "publish" | "delete">(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState(0);
+  const [uploadingPosts, setUploadingPosts] = useState<string[]>([]);
 
   // --- refs for the autosave machinery (avoid stale closures) ---
   const postsRef = useRef(posts);
@@ -236,7 +243,7 @@ export function Composer({
     versionRef.current++;
     if (timerRef.current) clearTimeout(timerRef.current);
     if (!draftIdRef.current) {
-      if (postsRef.current.some((p) => p.text.trim())) void ensureCreated();
+      if (postsRef.current.some(postHasContent)) void ensureCreated();
       return;
     }
     setSaveState("dirty");
@@ -383,6 +390,53 @@ export function Composer({
     [updatePosts],
   );
 
+  const onMediaChange = useCallback((id: string, change: (media: MediaAttachment[]) => MediaAttachment[]) => {
+    if (readOnlyRef.current) return;
+    updatePosts((current) => {
+      const post = current.find((p) => p.id === id);
+      if (!post || post.tweetId) return current;
+      const previous = post.media ?? [];
+      const media = change(previous);
+      if (media === previous) return current;
+      const error = mediaCombinationError(media);
+      if (error) {
+        toast(error, "error");
+        return current;
+      }
+      return current.map((p) => p === post ? { ...p, media } : p);
+    });
+  }, [toast, updatePosts]);
+
+  const onMediaDrop = useCallback((targetId: string, source: AttachmentDrag, beforeId?: string) => {
+    if (readOnlyRef.current) return;
+    updatePosts((current) => {
+      const from = current.find((p) => p.id === source.postId);
+      const to = current.find((p) => p.id === targetId);
+      const item = from?.media?.find((media) => media.id === source.mediaId);
+      if (!from || !to || !item || from.tweetId || to.tweetId || item.id === beforeId) return current;
+
+      const targetMedia = to.media ?? [];
+      const next = from === to ? targetMedia.filter((media) => media.id !== item.id) : [...targetMedia];
+      if (next.some((media) => media.id === item.id)) return current;
+      const index = targetMedia.findIndex((media) => media.id === beforeId);
+      next.splice(index < 0 ? next.length : index, 0, item);
+      const error = mediaCombinationError(next);
+      if (error) {
+        toast(error, "error");
+        return current;
+      }
+      return current.map((p) => {
+        if (p === to) return { ...p, media: next };
+        if (p === from) return { ...p, media: from.media?.filter((media) => media.id !== item.id) };
+        return p;
+      });
+    });
+  }, [toast, updatePosts]);
+
+  const onUploadState = useCallback((id: string, uploading: boolean) => {
+    setUploadingPosts((current) => uploading ? [...current, id] : current.filter((postId) => postId !== id));
+  }, []);
+
   const onSplitAt = useCallback(
     (id: string, before: string, after: string) => {
       if (postsRef.current.length >= MAX_DRAFT_POSTS) return;
@@ -437,7 +491,7 @@ export function Composer({
         const i = ps.findIndex((p) => p.id === id);
         if (i < 0 || ps[i].tweetId || ps[i + 1]?.tweetId) return ps;
         const out = [...ps];
-        out.splice(i, 1, ...created);
+        out.splice(i, 1, { ...out[i], text: created[0].text }, ...created.slice(1));
         return out;
       });
       const last = created[created.length - 1];
@@ -462,7 +516,7 @@ export function Composer({
     (id: string) => {
       const ps = postsRef.current;
       const i = ps.findIndex((p) => p.id === id);
-      if (i <= 0 || ps[i - 1].tweetId) return;
+      if (i <= 0 || ps[i - 1].tweetId || ps[i].media?.length) return;
       const prev = ps[i - 1];
       if (prev.text.length + ps[i].text.length > MAX_DRAFT_POST_CODE_UNITS) return;
       const caret = prev.text.length;
@@ -482,12 +536,14 @@ export function Composer({
   }, []);
 
   // ---------- validation ----------
+  const uploadingMedia = posts.some((post) => uploadingPosts.includes(post.id));
   const problems = useMemo(() => {
-    if (posts.every((p) => !p.text.trim())) return "Write something first";
-    if (posts.some((p) => !p.text.trim() && !p.tweetId)) return "Remove empty posts first";
-    if (posts.some((p) => !countPost(p.text, max).valid && !p.tweetId)) return "Some posts are over the character limit";
+    if (uploadingMedia) return "Wait for media uploads to finish";
+    if (!posts.some(postHasContent)) return "Write something or add media first";
+    if (posts.some((p) => !postHasContent(p) && !p.tweetId)) return "Remove empty posts first";
+    if (posts.some((p) => p.text.trim() && !countPost(p.text, max).valid && !p.tweetId)) return "Some posts are over the character limit";
     return null;
-  }, [posts, max]);
+  }, [posts, max, uploadingMedia]);
 
   // ---------- credits ----------
   const costs = credits?.costs ?? DEFAULT_COSTS;
@@ -617,7 +673,9 @@ export function Composer({
     setBusy("duplicate");
     const token = loadToken.current;
     try {
-      const { draft: copy } = await api.createDraft(postsRef.current.map((post) => newPost(post.text)));
+      const { draft: copy } = await api.createDraft(payload(postsRef.current.map((post) => ({
+        ...newPost(post.text), media: post.media,
+      }))));
       upsertDraft(copy);
       toast("Draft duplicated");
       if (loadToken.current === token) router.push(`/drafts/${copy.id}`);
@@ -701,7 +759,7 @@ export function Composer({
   // ---------- render ----------
   const publishedPosts = posts.filter((p) => p.tweetId);
   const firstTweet = publishedPosts[0]?.tweetId;
-  const hasContent = posts.some((p) => p.text.trim());
+  const hasContent = posts.some(postHasContent);
   const commands: ComposerCommand[] = [
     { label: "New draft", shortcut: "⌘/Ctrl .", run: startNew },
     { label: showPreview ? "Hide X preview" : "Show X preview", run: togglePreview },
@@ -956,6 +1014,9 @@ export function Composer({
                     autoFocus={!routeId && i === 0 && posts.length === 1}
                     registerInput={registerInput}
                     onChange={onChange}
+                    onMediaChange={onMediaChange}
+                    onMediaDrop={onMediaDrop}
+                    onUploadState={onUploadState}
                     onSplitAt={onSplitAt}
                     onReplaceWith={onReplaceWith}
                     onRemove={onRemove}

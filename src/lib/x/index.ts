@@ -12,7 +12,7 @@ export * from "./types";
 export { XTokenError, X_TOKEN_URL } from "./real";
 
 export const X_AUTHORIZE_URL = "https://x.com/i/oauth2/authorize";
-export const X_SCOPES = "tweet.read tweet.write users.read offline.access";
+export const X_SCOPES = "tweet.read tweet.write users.read offline.access media.write";
 const REFRESH_SKEW_MS = 2 * 60 * 1000;
 /** Losers of the refresh claim re-read the row this often, for at most REFRESH_WAIT_MS. */
 const REFRESH_POLL_MS = 500;
@@ -288,7 +288,7 @@ export function refreshIfNeeded(userId: string, opts: { force?: boolean } = {}):
 export async function getRawXClientForUser(userId: string): Promise<XClient> {
   if (env.mockX) return createMockXClient();
   const tokens = await refreshIfNeeded(userId);
-  return createRealXClient(tokens.accessToken);
+  return createRealXClient(tokens.accessToken, tokens.scope);
 }
 
 /** @deprecated alias — call sites are moving to the metered wrapper (src/lib/x/metered.ts). */

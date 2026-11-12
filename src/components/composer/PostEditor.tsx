@@ -1,15 +1,18 @@
 "use client";
 
-import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { MAX_DRAFT_POSTS, MAX_DRAFT_POST_CODE_UNITS } from "@/lib/draft-limits";
+import { MAX_MEDIA_ATTACHMENTS, MEDIA_CONTENT_TYPES, isStaticImage, type MediaAttachment } from "@/lib/media-types";
 import { countPost, hasUrl, overflowIndex, splitIntoThread, tokenize } from "@/lib/text";
 import type { Me, ThreadPost, XUser } from "../lib/api";
 import { Avatar } from "../ui/Avatar";
 import { VerifiedBadge } from "../ui/VerifiedBadge";
-import { IconAddPost, IconExternal, IconLink, IconScissors, IconX } from "../ui/icons";
+import { IconAddPost, IconExternal, IconLink, IconMedia, IconScissors, IconX } from "../ui/icons";
 import { CharCounter } from "./CharCounter";
 import { MentionMenu } from "./MentionMenu";
+import { ATTACHMENT_DRAG_TYPE, PostMedia, readAttachmentDrag, type AttachmentDrag } from "./PostMedia";
 import { useMentionSearch } from "./useMentionSearch";
+import { usePostMediaUpload } from "./usePostMediaUpload";
 import { findEmoji } from "./emoji";
 
 /** "@abc" immediately before the caret (X handle chars, max 15). */
@@ -98,6 +101,9 @@ type Props = {
   autoFocus?: boolean;
   registerInput: (id: string, el: HTMLTextAreaElement | null) => void;
   onChange: (id: string, text: string) => void;
+  onMediaChange: (id: string, change: (media: MediaAttachment[]) => MediaAttachment[]) => void;
+  onMediaDrop: (targetId: string, source: AttachmentDrag, beforeId?: string) => void;
+  onUploadState: (id: string, uploading: boolean) => void;
   onSplitAt: (id: string, before: string, after: string) => void;
   onReplaceWith: (id: string, texts: string[]) => void;
   onRemove: (id: string, focusPrev: boolean) => void;
@@ -121,6 +127,9 @@ function PostEditorImpl({
   autoFocus,
   registerInput,
   onChange,
+  onMediaChange,
+  onMediaDrop,
+  onUploadState,
   onSplitAt,
   onReplaceWith,
   onRemove,
@@ -143,7 +152,11 @@ function PostEditorImpl({
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const pendingCaret = useRef<number | null>(null);
   const actionsButtonRef = useRef<HTMLButtonElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileDragDepth = useRef(0);
   const actionsId = useId();
+  const mediaTipId = useId();
+  const [fileDragOver, setFileDragOver] = useState(false);
 
   const [focused, setFocused] = useState(false);
   const [mention, setMention] = useState<MentionCtx | null>(null);
@@ -157,6 +170,29 @@ function PostEditorImpl({
   const [emojiRange, setEmojiRange] = useState<{ start: number; end: number } | null>(null);
   const [emojiQuery, setEmojiQuery] = useState("");
   const [actionsOpen, setActionsOpen] = useState(false);
+
+  const media = post.media ?? [];
+  const { error: uploadError, progress, upload } = usePostMediaUpload(
+    media,
+    (item) => onMediaChange(post.id, (current) => [...current, item]),
+    (uploading) => onUploadState(post.id, uploading),
+  );
+  const canAddMedia = !readOnly && progress === null && media.length < MAX_MEDIA_ATTACHMENTS
+    && media.every((item) => isStaticImage(item.contentType));
+  const fileDrag = (event: DragEvent) => event.dataTransfer.types.includes("Files");
+  const attachmentDrag = (event: DragEvent) => event.dataTransfer.types.includes(ATTACHMENT_DRAG_TYPE);
+  const mediaDrop = (event: DragEvent) => {
+    if (fileDrag(event)) {
+      event.preventDefault();
+      fileDragDepth.current = 0;
+      setFileDragOver(false);
+      if (!readOnly) void upload(Array.from(event.dataTransfer.files));
+    } else if (!readOnly && progress === null && attachmentDrag(event)) {
+      event.preventDefault();
+      const source = readAttachmentDrag(event);
+      if (source) onMediaDrop(post.id, source);
+    }
+  };
 
   const { weighted, valid } = useMemo(() => countPost(text, max), [text, max]);
   const overflowAt = useMemo(() => (valid ? null : overflowIndex(text, max)), [text, max, valid]);
@@ -328,6 +364,11 @@ function PostEditorImpl({
     if (readOnly) return;
 
     if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+      if (e.shiftKey && e.code === "KeyI") {
+        e.preventDefault();
+        if (canAddMedia) fileInputRef.current?.click();
+        return;
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (canInsert) onInsertAfter(post.id);
@@ -396,12 +437,12 @@ function PostEditorImpl({
 
     const collapsed = el.selectionStart === el.selectionEnd;
     if (e.key === "Backspace" && collapsed && el.selectionStart === 0) {
-      if (el.value === "" && total > 1) {
+      if (el.value === "" && !media.length && progress === null && total > 1) {
         e.preventDefault();
         onRemove(post.id, index > 0);
         return;
       }
-      if (index > 0 && el.value !== "") {
+      if (index > 0 && el.value !== "" && !media.length && progress === null) {
         e.preventDefault();
         onMergeUp(post.id);
         return;
@@ -427,7 +468,26 @@ function PostEditorImpl({
   const aliasListId = `emoji-aliases-${post.id}`;
 
   return (
-    <div className={`group/post relative flex gap-2.5 px-4 ${writing ? "pt-4" : "pt-2"}`}>
+    <div className={`group/post relative flex gap-2.5 px-4 ${writing ? "pt-4" : "pt-2"}`}
+      onDragEnter={(event) => {
+        if (readOnly || progress !== null || !fileDrag(event)) return;
+        fileDragDepth.current++;
+        setFileDragOver(true);
+      }}
+      onDragLeave={(event) => {
+        if (!fileDrag(event) || !fileDragDepth.current) return;
+        if (--fileDragDepth.current === 0) setFileDragOver(false);
+      }}
+      onDragOver={(event) => {
+        if (fileDrag(event) || (!readOnly && progress === null && attachmentDrag(event))) event.preventDefault();
+      }}
+      onDrop={mediaDrop}
+    >
+      {fileDragOver && (
+        <div aria-hidden className="pointer-events-none absolute inset-1 z-20 flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-accent bg-canvas/90 text-sm font-medium text-accent">
+          <IconMedia size={18} /> Drop media here
+        </div>
+      )}
       <div aria-hidden className={`relative flex shrink-0 flex-col items-center ${writing ? "w-4 pt-2.5" : "w-10"}`}>
         {writing
           ? <span className="h-2 w-2 rounded-full border border-line-strong bg-canvas" />
@@ -471,6 +531,12 @@ function PostEditorImpl({
             style={metrics}
             className="tweet-text composer-input col-start-1 row-start-1 h-full w-full"
             onChange={handleChange}
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData.files);
+              if (readOnly || !files.length) return;
+              event.preventDefault();
+              void upload(files);
+            }}
             onKeyDown={handleKeyDown}
             onSelect={(e) => updateSuggestions(e.currentTarget)}
             onFocus={(e) => {
@@ -519,6 +585,19 @@ function PostEditorImpl({
             </ul>
           )}
         </div>
+
+        <PostMedia media={media} edit={!readOnly && progress === null ? {
+          postId: post.id,
+          onChange: (change) => onMediaChange(post.id, change),
+          onDrop: (source, beforeId) => onMediaDrop(post.id, source, beforeId),
+        } : undefined} />
+        {progress !== null && (
+          <div role="status" className="mt-2 flex items-center gap-2 rounded-lg border border-line bg-card px-2.5 py-2 text-xs text-muted">
+            <progress aria-label="Media upload progress" value={progress} max={100} className="h-1.5 w-20 accent-accent" />
+            Uploading media… {progress}%
+          </div>
+        )}
+        {uploadError && <p role="alert" className="mt-2 text-sm text-danger">{uploadError}</p>}
 
         <div className="mt-1 flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
           {posted && me && (
@@ -577,6 +656,29 @@ function PostEditorImpl({
                 >
                   <IconAddPost size={16} />
                 </button>
+              )}
+              {!readOnly && (
+                <div className="group/media relative">
+                  <input type="file" ref={fileInputRef} hidden multiple accept={MEDIA_CONTENT_TYPES.join(",")}
+                    onChange={(event) => {
+                      const files = Array.from(event.currentTarget.files ?? []);
+                      event.currentTarget.value = "";
+                      if (canAddMedia) void upload(files);
+                    }} />
+                  <button type="button" className={`${ACTION_BUTTON} disabled:opacity-40`}
+                    aria-label="Add media" aria-describedby={mediaTipId}
+                    aria-keyshortcuts="Meta+Shift+I Control+Shift+I" disabled={!canAddMedia}
+                    onClick={() => fileInputRef.current?.click()}>
+                    <IconMedia size={16} />
+                  </button>
+                  <div id={mediaTipId} role="tooltip"
+                    className="pointer-events-none absolute right-0 top-full z-30 mt-1 w-max rounded-lg border border-line bg-card px-2 py-1.5 text-xs opacity-0 shadow-pop transition-opacity group-hover/media:opacity-100 group-focus-within/media:opacity-100">
+                    <div className="flex items-center justify-between gap-2 text-ink">
+                      Add media <kbd className="rounded bg-hover px-1 text-muted">⌘/Ctrl ⇧ I</kbd>
+                    </div>
+                    <div className="mt-1 text-muted">Images, videos, or GIFs</div>
+                  </div>
+                </div>
               )}
               {!readOnly && (
                 <div className="relative">
