@@ -43,6 +43,13 @@ export function PostMedia({ media, edit }: { media?: MediaAttachment[]; edit?: E
     });
   };
 
+  // Once alt text is written, the toggle shows it instead of the generic label.
+  const altSummary = media
+    .filter((item) => !item.contentType.startsWith("video/"))
+    .map((item) => item.altText?.trim())
+    .filter(Boolean)
+    .join(" · ");
+
   // Alt text saves as you type; Done (or ⌘/Ctrl+Enter, Escape) just dismisses the panel.
   const closeDescriptions = () => {
     setDescriptionsOpen(false);
@@ -117,9 +124,10 @@ export function PostMedia({ media, edit }: { media?: MediaAttachment[]; edit?: E
       </div>
       {edit && media.some((item) => !item.contentType.startsWith("video/")) && (
         <div className="mt-1.5">
-          <button ref={toggleRef} type="button" className="flex items-center gap-1 rounded text-[13px] text-muted hover:text-ink"
-            aria-expanded={descriptionsOpen} aria-controls={descriptionId} onClick={() => setDescriptionsOpen(!descriptionsOpen)}>
-            <IconDoc size={14} /> Descriptions
+          <button ref={toggleRef} type="button" className="flex max-w-full items-center gap-1 rounded text-[13px] text-muted hover:text-ink"
+            aria-expanded={descriptionsOpen} aria-controls={descriptionId} onClick={() => setDescriptionsOpen(!descriptionsOpen)}
+            aria-label={altSummary ? `Edit descriptions: ${altSummary}` : undefined} title={altSummary || undefined}>
+            <IconDoc size={14} className="shrink-0" /> <span className="truncate">{altSummary || "Descriptions"}</span>
           </button>
           {descriptionsOpen && (
             <div id={descriptionId} className="mt-2 space-y-2 rounded-xl border border-line bg-card p-3"
