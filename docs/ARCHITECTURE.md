@@ -64,11 +64,15 @@ Errors are `{ error: string, code: string, ...extra }` (see `errorResponse`). Mu
 - `PATCH /api/drafts/:id` `{ posts?, scheduledAt?: ISO|null }`. Setting `scheduledAt` sets status to `scheduled`; `null` sets it back to `draft`. Published drafts can't be edited (409). Scheduling runs the publish checks (below).
   - For existing posts, omitting `media` keeps the current attachments and `media: []` clears them. If a failed thread is partially published, posts with a stored tweet ID keep their original attachments.
 - `DELETE /api/drafts/:id`
+- `POST /api/media` `{ name, contentType, size }` → 201 `{ attachment }`. Starts a chunked upload. Types: JPEG, PNG, WebP (5 MB), GIF (15 MB), MP4 (32 MB). Per-user quota 128 MB / 256 files; unreferenced uploads older than 24h are pruned. Rate limit `mediaStart` (20/min). 413 `media_storage_full` when the quota is used up.
+- `PATCH /api/media/:id` `{ offset, data }` (base64, 2 MB chunks, in order) → `{ uploadedSize }`. The first chunk is checked against the file signature (415 on mismatch). Retrying an identical chunk is idempotent. Rate limit `mediaChunk` (120/min).
+- `GET /api/media/:id` → the file, owner only, with `Range` support. Rate limit `mediaRead` (180/min).
+- Publishing uploads each attachment to X (`/2/media/upload`, chunked for GIF/MP4, alt text via `/2/media/metadata`) immediately before its post, inside a 40s per-post budget. Upload failures happen before `postTweet`, so they are retryable, never `publish_uncertain`. Tokens without the `media.write` scope fail with `reconnect_required`.
 - `POST /api/drafts/:id/publish`: publishes now, synchronously and metered → `{ draft }`.
   - No body. Rate limit `publish` (10/min).
   - The publish checks run **before** the draft is claimed.
   - On an X or credit failure, the draft is marked `failed`. The response is the `errorResponse` body plus `draft`, with the same status.
-- `GET  /api/credits` → `{ balance, isAdmin, costs: { post, postWithUrl, userRead }, ledger: LedgerEntry[], purchase }` (last 50 rows, ISO dates).
+- `GET  /api/credits` → `{ balance, isAdmin, costs: { post, postWithUrl, userRead, mediaUpload, mediaMetadata }, ledger: LedgerEntry[], purchase }` (last 50 rows, ISO dates).
   - `purchase` = `{ enabled, network: "base" | "base-sepolia" | null, chainId, payTo, asset, packs: { id, usd, credits }[] }`. When the feature is off it is `{ enabled: false, …null, packs: [] }`. `payTo`, `asset` and `chainId` let the client pin what it signs.
 - `POST /api/credits/purchase` `{ packId }` (optional x402 feature; see "Credit purchases"). Runtime `nodejs`, `maxDuration` 30. Rate limit `purchase` (10/min).
   - Feature off → **404**.
@@ -110,7 +114,7 @@ For admins only (`ADMIN_X_USER_IDS`). Everyone else gets **404**, so the surface
 - After success, bump `mention_cache.use_count` for the @mentions in the thread.
 
 ## Credits
-- 1 credit ≈ $0.001 of X spend. `CREDIT_COSTS` are `post` 15, `postWithUrl` 200, `userRead` 10 (each overridable with a `CREDIT_COST_*` env var).
+- 1 credit ≈ $0.001 of X spend. `CREDIT_COSTS` are `post` 15, `postWithUrl` 200, `userRead` 10, `mediaUpload` 0 (per X upload request), `mediaMetadata` 5 (per alt-text call) (each overridable with a `CREDIT_COST_*` env var).
 - New users get `SIGNUP_CREDITS` (default 1000) once.
 - `GLOBAL_DAILY_CREDIT_CAP` caps non-admin spend per rolling 24h (default 20000; 0 disables it).
 - Existing users with no `signup` ledger row (created before credits existed) get the signup grant on their next login.
