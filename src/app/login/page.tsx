@@ -48,12 +48,12 @@ const FEATURES: { icon: ReactNode; title: string; body: string }[] = [
   {
     icon: <IconShield size={20} />,
     title: "Your account stays yours",
-    body: "You authorize mykfully on x.com through X's official OAuth flow. Access tokens are encrypted at rest, and the code is open source.",
+    body: "Sign in with X OAuth. We never see your password, tokens are encrypted at rest, and the code is open source.",
   },
 ];
 
 const STEPS = [
-  { title: "Connect your X account", body: "Authorize mykfully on x.com with X's official OAuth." },
+  { title: "Sign in with X", body: "One click. No password, no email form." },
   { title: "Write your thread", body: "Draft, preview and polish in a calm, focused editor." },
   { title: "Schedule it", body: "Choose a time. mykfully posts it for you." },
 ];
