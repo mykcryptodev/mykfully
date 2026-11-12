@@ -14,12 +14,18 @@ Built with Next.js 15 (App Router), Drizzle ORM + Postgres (Neon), and Tailwind.
   - Long-post limits for Premium accounts.
   - Split long text into a thread.
 - **Keyboard shortcuts:**
-  - <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd> or three newlines starts a new post.
+  - <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd> adds a post below. Type three newlines to split the current post at the caret.
+  - <kbd>Alt/Option</kbd>+<kbd>↑</kbd> or <kbd>↓</kbd> moves the active post.
   - <kbd>Backspace</kbd> in an empty post removes it.
+  - <kbd>⌘/Ctrl</kbd>+<kbd>K</kbd> opens the command bar.
+  - <kbd>⌘/Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> toggles focus mode, and <kbd>Esc</kbd> exits it. <kbd>⌘/Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> switches between desktop and mobile editor widths.
+  - <kbd>⌘/Ctrl</kbd>+<kbd>.</kbd> starts a draft, <kbd>⌘/Ctrl</kbd>+<kbd>/</kbd> toggles the sidebar, and <kbd>⌘/Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> opens publish confirmation.
+  - <kbd>⌘/Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>.</kbd> opens the emoji picker. Type `:` and an alias to search inline.
 - **@mention autocomplete.** Searches X users as you type. It falls back to exact-handle lookup, plus a local cache of people you've mentioned before, when user search isn't available on your API plan.
-- **X-style preview** that shows the thread as it will appear on X.
+- **X-style preview** with desktop and mobile layouts.
 - **Autosaved drafts**, with Drafts, Scheduled, Published and Failed views.
 - **Scheduling** in your timezone, plus **Publish now**:
+  - Pick a date and time on the calendar, or enter a time such as “tomorrow at 9am” or “in 3 hours.”
   - A Vercel Cron job runs every minute and publishes due threads.
   - It claims each thread atomically, so a thread can't be posted twice.
   - It saves each tweet ID as it goes, so a thread that fails midway resumes where it stopped instead of reposting.

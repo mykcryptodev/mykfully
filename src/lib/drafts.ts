@@ -6,6 +6,7 @@ import { drafts, users, type DraftStatus, type ThreadPost } from "./db/schema";
 import { estimateThreadCost, getBalance, isAdmin } from "./credits";
 import { HttpError } from "./errors";
 import { countPost } from "./text";
+import { MAX_DRAFT_POSTS, MAX_DRAFT_POST_CODE_UNITS } from "./draft-limits";
 
 export { HttpError, errorResponse } from "./errors";
 
@@ -29,9 +30,9 @@ export const DRAFT_STATUSES = ["draft", "scheduled", "publishing", "published", 
 // Clients may only send id + text; any tweetId they send is stripped (zod strips unknown keys).
 const postInput = z.object({
   id: z.string().min(1).max(100),
-  text: z.string().max(25000),
+  text: z.string().max(MAX_DRAFT_POST_CODE_UNITS),
 });
-const postsInput = z.array(postInput).min(1).max(50);
+const postsInput = z.array(postInput).min(1).max(MAX_DRAFT_POSTS);
 
 export const createDraftSchema = z.object({ posts: postsInput });
 export const updateDraftSchema = z.object({

@@ -50,6 +50,41 @@ export function addDays(date: string, days: number): string {
   return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
 }
 
+/** Reject nonexistent wall times and preserve the chosen instant during a repeated hour. */
+export function resolveScheduleTime(date: string, time: string, tz: string, original: Date | null = null): Date | null {
+  if (!time) return null;
+  const matches = (instant: Date) => {
+    const wallTime = utcToZoned(instant, tz);
+    return wallTime.date === date && wallTime.time === time;
+  };
+  if (original && matches(original)) return original;
+  const at = zonedToUtc(date, time, tz);
+  return matches(at) ? at : null;
+}
+
+export function parseSchedulePhrase(value: string, tz: string, now: number): Date | null {
+  const phrase = value.trim().toLowerCase().replace(/\s+/g, " ");
+  const relative = /^in ([1-9]\d{0,4}) (minute|hour)s?$/.exec(phrase);
+  if (relative) {
+    const minutes = Number(relative[1]) * (relative[2] === "hour" ? 60 : 1);
+    return new Date((Math.ceil(now / 60000) + minutes) * 60000);
+  }
+
+  const absolute = /^(today|tomorrow|\d{4}-\d{2}-\d{2})(?: at)? (\d{1,2})(?::([0-5]\d))?\s*([ap]m)?$/.exec(phrase);
+  if (!absolute) return null;
+  const [, day, hours, minutes, meridiem] = absolute;
+  let hour = Number(hours);
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return null;
+    hour = hour % 12 + (meridiem === "pm" ? 12 : 0);
+  } else if (!minutes || hour > 23) {
+    return null;
+  }
+  const today = utcToZoned(now, tz).date;
+  const date = day === "today" ? today : day === "tomorrow" ? addDays(today, 1) : day;
+  return resolveScheduleTime(date, `${pad(hour)}:${minutes ?? "00"}`, tz);
+}
+
 export function formatInTz(at: Date | string, tz: string, opts: Intl.DateTimeFormatOptions): string {
   try {
     return new Intl.DateTimeFormat(undefined, { timeZone: tz, ...opts }).format(new Date(at));

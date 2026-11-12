@@ -329,7 +329,8 @@ export async function POST(req: Request, { params }: Ctx) {
   - The textarea uses combobox ARIA attributes.
   - The server side merges `mention_cache` with metered X search. It calls X only when `q.length >= 2` and there are fewer than 5 cache hits. It keeps a 60-second per-process memo (memo hits are free) and falls back to exact lookup.
 - Keyboard shortcuts:
-  - <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd> or three newlines splits into a new post.
+  - <kbd>⌘/Ctrl</kbd>+<kbd>Enter</kbd> adds a post below. Type three newlines to split the current post at the caret.
+  - <kbd>Alt/Option</kbd>+<kbd>↑</kbd> or <kbd>↓</kbd> moves the active post.
   - <kbd>Backspace</kbd> in an empty post removes it.
 
 ## 10. Deployment (Vercel)

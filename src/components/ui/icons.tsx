@@ -28,6 +28,11 @@ export const IconPlus = (p: P) => (
     <path d="M12 5v14M5 12h14" />
   </svg>
 );
+export const IconAddPost = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4 5h16M4 9h16m-8 4v7m-3.5-3.5h7" />
+  </svg>
+);
 export const IconX = (p: P) => (
   <svg {...base(p)}>
     <path d="M18 6 6 18M6 6l12 12" />
@@ -58,6 +63,12 @@ export const IconSend = (p: P) => (
 export const IconEye = (p: P) => (
   <svg {...base(p)}>
     <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+export const IconFocus = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5" />
     <circle cx="12" cy="12" r="3" />
   </svg>
 );

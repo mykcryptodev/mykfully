@@ -10,6 +10,9 @@
   --accent: #1d9bf0;
   --accent-hover: #1a8cd8;
   --accent-soft: rgba(29, 155, 240, 0.1);
+  --schedule: #ffb66e;
+  --schedule-hover: #ffa451;
+  --on-schedule: #351b08;
   --sidebar: #f8f9f9;
   --hover: rgba(15, 20, 25, 0.05);
   --card: #ffffff;
@@ -30,6 +33,9 @@
     --line: #2f3336;
     --line-strong: #333639;
     --accent-soft: rgba(29, 155, 240, 0.16);
+    --schedule: #ef9c53;
+    --schedule-hover: #ffb36c;
+    --on-schedule: #281506;
     --sidebar: #0b0b0c;
     --hover: rgba(231, 233, 234, 0.07);
     --card: #000000;
@@ -49,6 +55,9 @@
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-soft: var(--accent-soft);
+  --color-schedule: var(--schedule);
+  --color-schedule-hover: var(--schedule-hover);
+  --color-on-schedule: var(--on-schedule);
   --color-sidebar: var(--sidebar);
   --color-hover: var(--hover);
   --color-card: var(--card);

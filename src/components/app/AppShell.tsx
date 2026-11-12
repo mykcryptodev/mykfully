@@ -20,15 +20,26 @@ export function AppShell({ children }: { children: ReactNode }) {
   const routeId = m ? decodeURIComponent(m[1]) : null;
   // Keep the composer on its last draft while a full page is shown (derived state, updated during render).
   const [lastRouteId, setLastRouteId] = useState<string | null>(routeId);
+  const [focusMode, setFocusMode] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   if (!fullPage && routeId !== lastRouteId) setLastRouteId(routeId);
   return (
     <AppProvider>
       <div className="flex h-dvh flex-col overflow-hidden bg-canvas text-ink">
         <ReconnectBanner />
         <div className="flex min-h-0 flex-1">
-          <Sidebar />
+          <div className={fullPage ? "contents" : focusMode ? "hidden" : sidebarCollapsed ? "contents md:hidden" : "contents"}>
+            <Sidebar />
+          </div>
           <main className={`min-w-0 flex-1 ${fullPage ? "hidden" : "flex"}`}>
-            <Composer routeId={fullPage ? lastRouteId : routeId} />
+            <Composer
+              routeId={fullPage ? lastRouteId : routeId}
+              active={!fullPage}
+              focusMode={focusMode}
+              onFocusModeChange={setFocusMode}
+              sidebarCollapsed={sidebarCollapsed}
+              onSidebarToggle={() => setSidebarCollapsed((collapsed) => !collapsed)}
+            />
           </main>
           {fullPage ? <main className="flex min-w-0 flex-1 flex-col">{children}</main> : children}
         </div>

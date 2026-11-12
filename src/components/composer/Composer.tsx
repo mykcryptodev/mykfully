@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { countPost, hasUrl, maxLengthFor } from "@/lib/text";
+import { MAX_DRAFT_POSTS, MAX_DRAFT_POST_CODE_UNITS } from "@/lib/draft-limits";
 import {
   api,
   ApiError,
@@ -19,26 +20,34 @@ import { tabFor, useApp } from "../app/AppProvider";
 import { DRAFT_DELETED_EVENT } from "../sidebar/Sidebar";
 import { ConfirmDialog } from "../ui/Modal";
 import { Spinner } from "../ui/Spinner";
-import { Avatar } from "../ui/Avatar";
 import {
   IconAlert,
+  IconCalendar,
   IconCheckCircle,
-  IconChevronDown,
   IconClock,
   IconExternal,
   IconEye,
+  IconFocus,
   IconHash,
   IconMenu,
+  IconPen,
   IconPlus,
-  IconSend,
+  IconSearch,
   IconTrash,
+  IconX,
 } from "../ui/icons";
+import { CommandBar, type ComposerCommand } from "./CommandBar";
 import { PostEditor } from "./PostEditor";
-import { Preview } from "./Preview";
+import { PreviewPanel } from "./Preview";
 import { SchedulePopover } from "./SchedulePopover";
 
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
-type FocusReq = { id: string; pos: "start" | "end" | number } | null;
+type FocusReq = {
+  id: string;
+  pos: "start" | "end" | number;
+  end?: number;
+  direction?: HTMLTextAreaElement["selectionDirection"];
+} | null;
 
 const newPost = (text = ""): ThreadPost => ({ id: uuid(), text });
 
@@ -78,9 +87,23 @@ function usePersistentFlag(key: string, initial: boolean) {
   return [v, set] as const;
 }
 
-export function Composer({ routeId }: { routeId: string | null }) {
+export function Composer({
+  routeId,
+  active,
+  focusMode,
+  onFocusModeChange,
+  sidebarCollapsed,
+  onSidebarToggle,
+}: {
+  routeId: string | null;
+  active: boolean;
+  focusMode: boolean;
+  onFocusModeChange: (enabled: boolean) => void;
+  sidebarCollapsed: boolean;
+  onSidebarToggle: () => void;
+}) {
   const router = useRouter();
-  const { me, credits, buyCredits, refreshMe, upsertDraft, removeDraft, setTab, setSidebarOpen, toast } = useApp();
+  const { me, credits, buyCredits, refreshMe, upsertDraft, removeDraft, setTab, sidebarOpen, setSidebarOpen, toast } = useApp();
   const tz = me?.timezone ?? "UTC";
   const max = maxLengthFor(me?.verifiedType);
 
@@ -90,10 +113,16 @@ export function Composer({ routeId }: { routeId: string | null }) {
   const [notFound, setNotFound] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [focusReq, setFocusReq] = useState<FocusReq>(null);
-  const [showPreview, setShowPreview] = usePersistentFlag("myk:preview", false);
+  const [desktopPreview, setDesktopPreview] = usePersistentFlag("myk:preview", false);
+  const [mobilePreview, setMobilePreview] = useState(false);
+  const [wideViewport, setWideViewport] = useState(false);
+  const [mobileDevice, setMobileDevice] = usePersistentFlag("myk:preview-mobile", false);
   const [numbered, setNumbered] = usePersistentFlag("myk:numbered", false);
+  const [writingMode, setWritingMode] = usePersistentFlag("myk:writing-mode", false);
+  const [mobileWidth, setMobileWidth] = usePersistentFlag("myk:editor-mobile", false);
+  const [commandOpen, setCommandOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [busy, setBusy] = useState<null | "schedule" | "publish" | "unschedule" | "delete">(null);
+  const [busy, setBusy] = useState<null | "schedule" | "publish" | "unschedule" | "delete" | "duplicate">(null);
   const [confirm, setConfirm] = useState<null | "publish" | "delete">(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState(0);
@@ -110,11 +139,26 @@ export function Composer({ routeId }: { routeId: string | null }) {
   const readOnlyRef = useRef(false);
   const deletedRef = useRef<Set<string>>(new Set());
   const inputs = useRef(new Map<string, HTMLTextAreaElement>());
+  const lastFocusedPost = useRef<string | null>(null);
+  const previewButtonRef = useRef<HTMLButtonElement>(null);
+  const scheduleButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreScheduleFocus = useRef(false);
   const loadToken = useRef(0);
 
   const status = draft?.status ?? "draft";
   const readOnly = status === "published" || status === "publishing";
   readOnlyRef.current = readOnly;
+
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 64rem)");
+    const update = () => {
+      setWideViewport(media.matches);
+      if (media.matches) setMobilePreview(false);
+    };
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   // ---------- saving ----------
   const doPatch = useCallback(async () => {
@@ -132,21 +176,23 @@ export function Composer({ routeId }: { routeId: string | null }) {
       setSaveState(versionRef.current === savedVersionRef.current ? "saved" : "dirty");
     } catch (e) {
       if (draftIdRef.current !== id) return;
-      if (e instanceof ApiError && (e.status === 409 || e.status === 404)) {
-        savedVersionRef.current = versionRef.current;
+      if (e instanceof ApiError && e.status === 409) {
         try {
           const { draft: d } = await api.getDraft(id);
-          setDraft(d);
-          setPosts(d.posts);
+          if (draftIdRef.current !== id) return;
           upsertDraft(d);
-          toast(`This draft is ${d.status} and can’t be edited`, "error");
-        } catch {
-          /* ignore */
-        }
-        setSaveState("idle");
-      } else {
-        setSaveState("error");
+          if (d.status === "published" || d.status === "publishing") {
+            savedVersionRef.current = versionRef.current;
+            postsRef.current = d.posts;
+            setDraft(d);
+            setPosts(d.posts);
+            setSaveState("idle");
+            toast(`This draft is ${d.status} and can’t be edited`, "error");
+            return;
+          }
+        } catch {}
       }
+      if (draftIdRef.current === id) setSaveState("error");
     }
   }, [upsertDraft, toast]);
 
@@ -164,14 +210,15 @@ export function Composer({ routeId }: { routeId: string | null }) {
       const v = versionRef.current;
       try {
         const { draft: d } = await api.createDraft(payload(postsRef.current));
-        if (token !== loadToken.current) return null; // user moved on
         draftIdRef.current = d.id;
         savedVersionRef.current = v;
         setDraft(d);
         upsertDraft(d);
-        setTab("draft");
         // Reflect the new draft in the URL without remounting the composer.
-        window.history.replaceState(null, "", `/drafts/${d.id}`);
+        if (token === loadToken.current) {
+          setTab("draft");
+          window.history.replaceState(null, "", `/drafts/${d.id}`);
+        }
         if (versionRef.current !== v) void enqueueSave();
         else setSaveState("saved");
         return d.id;
@@ -209,6 +256,7 @@ export function Composer({ routeId }: { routeId: string | null }) {
   const updatePosts = useCallback(
     (fn: (prev: ThreadPost[]) => ThreadPost[]) => {
       const next = fn(postsRef.current);
+      if (next === postsRef.current) return;
       postsRef.current = next;
       setPosts(next);
       markDirty();
@@ -231,9 +279,14 @@ export function Composer({ routeId }: { routeId: string | null }) {
       versionRef.current = 0;
       savedVersionRef.current = 0;
       setScheduleOpen(false);
+      setCommandOpen(false);
+      setConfirm(null);
+      setMobilePreview(false);
+      restoreScheduleFocus.current = false;
       setNotFound(false);
       if (!routeId) {
         draftIdRef.current = null;
+        setLoading(false);
         const p = [newPost()];
         postsRef.current = p;
         setPosts(p);
@@ -320,7 +373,7 @@ export function Composer({ routeId }: { routeId: string | null }) {
     if (!el) return;
     el.focus();
     const pos = focusReq.pos === "start" ? 0 : focusReq.pos === "end" ? el.value.length : focusReq.pos;
-    el.setSelectionRange(pos, pos);
+    el.setSelectionRange(pos, focusReq.end ?? pos, focusReq.direction ?? undefined);
     setFocusReq(null);
   }, [focusReq, posts]);
 
@@ -332,10 +385,11 @@ export function Composer({ routeId }: { routeId: string | null }) {
 
   const onSplitAt = useCallback(
     (id: string, before: string, after: string) => {
+      if (postsRef.current.length >= MAX_DRAFT_POSTS) return;
       const np = newPost(after);
       updatePosts((ps) => {
         const i = ps.findIndex((p) => p.id === id);
-        if (i < 0) return ps;
+        if (i < 0 || ps[i].tweetId || ps[i + 1]?.tweetId) return ps;
         const out = [...ps];
         out[i] = { ...out[i], text: before };
         out.splice(i + 1, 0, np);
@@ -348,9 +402,11 @@ export function Composer({ routeId }: { routeId: string | null }) {
 
   const onInsertAfter = useCallback(
     (id: string) => {
+      if (postsRef.current.length >= MAX_DRAFT_POSTS) return;
       const np = newPost();
       updatePosts((ps) => {
         const i = ps.findIndex((p) => p.id === id);
+        if (i < 0 || ps[i + 1]?.tweetId) return ps;
         const out = [...ps];
         out.splice(i + 1, 0, np);
         return out;
@@ -360,18 +416,26 @@ export function Composer({ routeId }: { routeId: string | null }) {
     [updatePosts],
   );
 
-  const addAtEnd = useCallback(() => {
-    const np = newPost();
-    updatePosts((ps) => [...ps, np]);
-    setFocusReq({ id: np.id, pos: "start" });
+  const onMove = useCallback((id: string, direction: -1 | 1) => {
+    const current = postsRef.current;
+    const index = current.findIndex((post) => post.id === id);
+    const other = index + direction;
+    if (readOnlyRef.current || index < 0 || !current[other] || current[index].tweetId || current[other].tweetId) return;
+
+    const input = inputs.current.get(id);
+    const next = [...current];
+    [next[index], next[other]] = [next[other], next[index]];
+    updatePosts(() => next);
+    setFocusReq({ id, pos: input?.selectionStart ?? "end", end: input?.selectionEnd, direction: input?.selectionDirection });
   }, [updatePosts]);
 
   const onReplaceWith = useCallback(
     (id: string, texts: string[]) => {
+      if (!texts.length || postsRef.current.length + texts.length - 1 > MAX_DRAFT_POSTS) return;
       const created = texts.map((t, k) => (k === 0 ? { id, text: t } : newPost(t)));
       updatePosts((ps) => {
         const i = ps.findIndex((p) => p.id === id);
-        if (i < 0) return ps;
+        if (i < 0 || ps[i].tweetId || ps[i + 1]?.tweetId) return ps;
         const out = [...ps];
         out.splice(i, 1, ...created);
         return out;
@@ -400,6 +464,7 @@ export function Composer({ routeId }: { routeId: string | null }) {
       const i = ps.findIndex((p) => p.id === id);
       if (i <= 0 || ps[i - 1].tweetId) return;
       const prev = ps[i - 1];
+      if (prev.text.length + ps[i].text.length > MAX_DRAFT_POST_CODE_UNITS) return;
       const caret = prev.text.length;
       updatePosts((list) =>
         list.filter((p) => p.id !== id).map((p) => (p.id === prev.id ? { ...p, text: p.text + ps[i].text } : p)),
@@ -437,15 +502,21 @@ export function Composer({ routeId }: { routeId: string | null }) {
 
   // ---------- actions ----------
   const schedule = async (iso: string) => {
+    const token = loadToken.current;
     setBusy("schedule");
     try {
       const id = (await flush()) ?? (await ensureCreated());
       if (!id) throw new Error("Couldn’t save draft");
+      if (token !== loadToken.current) return;
+      if (versionRef.current !== savedVersionRef.current) throw new Error("Couldn’t save the latest edits");
       const { draft: d } = await api.updateDraft(id, { scheduledAt: iso });
-      setDraft(d);
       upsertDraft(d);
-      setTab("scheduled");
-      setScheduleOpen(false);
+      if (token === loadToken.current && draftIdRef.current === id) {
+        setDraft(d);
+        setTab("scheduled");
+        restoreScheduleFocus.current = true;
+        setScheduleOpen(false);
+      }
       toast(`Scheduled for ${formatSchedule(iso, tz)}`);
     } catch (e) {
       toast(creditErrorMessage(e) ?? (e instanceof Error ? e.message : "Couldn’t schedule"), "error");
@@ -480,6 +551,10 @@ export function Composer({ routeId }: { routeId: string | null }) {
     try {
       id = (await flush()) ?? (await ensureCreated());
       if (!id) throw new Error("Couldn’t save draft");
+      if (versionRef.current !== savedVersionRef.current) {
+        setConfirmError("Couldn’t save the latest edits. Try again.");
+        return;
+      }
       const { draft: d } = await api.publish(id);
       setDraft(d);
       setPosts(d.posts);
@@ -533,50 +608,176 @@ export function Composer({ routeId }: { routeId: string | null }) {
     }
   };
 
-  const startNew = () => {
+  const startNew = useCallback(() => {
     if (routeId || draftIdRef.current) router.push("/");
     else setNewKey((k) => k + 1);
+  }, [routeId, router]);
+
+  const duplicateDraft = async () => {
+    setBusy("duplicate");
+    const token = loadToken.current;
+    try {
+      const { draft: copy } = await api.createDraft(postsRef.current.map((post) => newPost(post.text)));
+      upsertDraft(copy);
+      toast("Draft duplicated");
+      if (loadToken.current === token) router.push(`/drafts/${copy.id}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn’t duplicate draft", "error");
+    } finally {
+      setBusy(null);
+    }
   };
+
+  const openPublishConfirmation = useCallback(() => {
+    setConfirmError(null);
+    setConfirm("publish");
+  }, []);
+
+  const changeFocusMode = useCallback((enabled: boolean) => {
+    onFocusModeChange(enabled);
+    const input = inputs.current.get(lastFocusedPost.current ?? "") ?? inputs.current.values().next().value;
+    input?.focus({ preventScroll: true });
+  }, [onFocusModeChange]);
+
+  const showPreview = !focusMode && (wideViewport ? desktopPreview : mobilePreview);
+  const togglePreview = () => {
+    if (wideViewport) setDesktopPreview(!desktopPreview);
+    else setMobilePreview(!mobilePreview);
+  };
+
+  const closePreview = () => {
+    if (wideViewport) setDesktopPreview(false);
+    else setMobilePreview(false);
+    previewButtonRef.current?.focus();
+  };
+
+  useEffect(() => {
+    if (busy || !restoreScheduleFocus.current) return;
+    restoreScheduleFocus.current = false;
+    scheduleButtonRef.current?.focus();
+  }, [busy]);
+
+  useEffect(() => {
+    if (!active || confirm || scheduleOpen || commandOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey) return;
+      if (event.key === "Escape") {
+        if (focusMode) changeFocusMode(false);
+        else if (mobilePreview) {
+          setMobilePreview(false);
+          previewButtonRef.current?.focus();
+        }
+        return;
+      }
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.shiftKey && event.code === "KeyF") {
+        event.preventDefault();
+        changeFocusMode(!focusMode);
+      } else if (event.shiftKey && event.code === "KeyH") {
+        event.preventDefault();
+        setMobileWidth(!mobileWidth);
+      } else if (!focusMode && !event.shiftKey && event.code === "KeyK") {
+        event.preventDefault();
+        setCommandOpen(true);
+      } else if (!focusMode && !event.shiftKey && event.code === "Period") {
+        event.preventDefault();
+        startNew();
+      } else if (!focusMode && !event.shiftKey && event.code === "Slash") {
+        event.preventDefault();
+        if (window.matchMedia("(min-width: 48rem)").matches) onSidebarToggle();
+        else setSidebarOpen(!sidebarOpen);
+      } else if (!focusMode && event.shiftKey && event.key === "Enter" && !readOnly && !blocked && !busy && !loading) {
+        event.preventDefault();
+        openPublishConfirmation();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    active, blocked, busy, changeFocusMode, commandOpen, confirm, focusMode, loading, mobilePreview, mobileWidth,
+    onSidebarToggle, openPublishConfirmation, readOnly, scheduleOpen, setMobileWidth, setSidebarOpen, sidebarOpen, startNew,
+  ]);
 
   // ---------- render ----------
   const publishedPosts = posts.filter((p) => p.tweetId);
   const firstTweet = publishedPosts[0]?.tweetId;
   const hasContent = posts.some((p) => p.text.trim());
+  const commands: ComposerCommand[] = [
+    { label: "New draft", shortcut: "⌘/Ctrl .", run: startNew },
+    { label: showPreview ? "Hide X preview" : "Show X preview", run: togglePreview },
+    { label: "Enter focus mode", shortcut: "⌘/Ctrl ⇧ F", run: () => changeFocusMode(true) },
+    { label: mobileWidth ? "Switch to desktop width" : "Switch to mobile width", shortcut: "⌘/Ctrl ⇧ H", run: () => setMobileWidth(!mobileWidth) },
+    { label: writingMode ? "Show X profile" : "Hide X profile for writing", run: () => setWritingMode(!writingMode) },
+    { label: numbered ? "Hide post numbers" : "Show post numbers", run: () => setNumbered(!numbered) },
+  ];
+  if (hasContent && !busy) commands.push({ label: "Duplicate draft", keywords: "copy", run: duplicateDraft });
+  if (!readOnly && !blocked && !busy) {
+    commands.push(
+      { label: status === "scheduled" ? "Reschedule draft" : "Schedule draft", run: () => setScheduleOpen(true) },
+      { label: status === "failed" ? "Retry publishing" : "Publish now", shortcut: "⌘/Ctrl ⇧ ↵", run: openPublishConfirmation },
+    );
+  }
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
 
         {/* top bar */}
-        <header className="sticky top-0 z-20 flex h-[53px] shrink-0 items-center gap-2 border-b border-line bg-canvas/85 px-3 backdrop-blur-md sm:px-4">
+        {focusMode ? (
+          <header className="flex h-12 shrink-0 items-center justify-between px-3 text-sm text-muted sm:px-4">
+            <span>Press <kbd className="rounded border border-line px-1.5 py-0.5 text-xs">Esc</kbd> to exit focus mode</span>
+            <button
+              type="button"
+              aria-label="Exit focus mode"
+              onClick={() => changeFocusMode(false)}
+              className="rounded-lg p-2 hover:bg-hover hover:text-ink"
+            >
+              <IconX size={17} />
+            </button>
+          </header>
+        ) : (
+        <header className="relative z-20 flex h-12 shrink-0 items-center gap-1 border-b border-line bg-canvas px-2 sm:gap-2 sm:px-4">
+          {!focusMode && (
+            <button
+              className="rounded-lg p-2 text-ink hover:bg-hover md:hidden"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              <IconMenu size={19} />
+            </button>
+          )}
           <button
-            className="rounded-full p-2 text-ink hover:bg-hover md:hidden"
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open menu"
+            className="hidden rounded-lg p-2 text-muted hover:bg-hover md:inline-flex"
+            onClick={onSidebarToggle}
+            aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+            aria-keyshortcuts="Meta+/ Control+/"
           >
-            <IconMenu size={20} />
+            <IconMenu size={17} />
           </button>
           <StatusChip draft={draft} tz={tz} />
           <SaveIndicator state={saveState} hidden={readOnly} />
           <span className="flex-1" />
 
           <button
-            onClick={() => setNumbered(!numbered)}
-            className={`hidden h-8 items-center gap-1 rounded-full px-2.5 text-[13px] font-semibold transition-colors sm:flex ${
-              numbered ? "bg-accent-soft text-accent" : "text-muted hover:bg-hover"
-            }`}
-            title="Show 1/n numbering"
-            aria-pressed={numbered}
+            onClick={() => setCommandOpen(true)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted hover:bg-hover"
+            aria-label="Open command bar"
+            aria-haspopup="dialog"
+            aria-keyshortcuts="Meta+K Control+K"
+            title="Open command bar"
           >
-            <IconHash size={14} /> 1/{posts.length}
+            <IconSearch size={16} />
           </button>
           <button
-            onClick={() => setShowPreview(!showPreview)}
-            className={`flex h-8 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold transition-colors ${
+            ref={previewButtonRef}
+            onClick={togglePreview}
+            className={`flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] font-semibold transition-colors ${
               showPreview ? "bg-accent-soft text-accent" : "text-muted hover:bg-hover"
             }`}
+            aria-label="Preview"
             aria-pressed={showPreview}
+            title="Preview"
           >
-            <IconEye size={15} /> <span className="hidden sm:inline">Preview</span>
+            <IconEye size={17} /> <span className="hidden xl:inline">Preview</span>
           </button>
           {(draftIdRef.current || hasContent) && status !== "publishing" && (
             <button
@@ -584,7 +785,7 @@ export function Composer({ routeId }: { routeId: string | null }) {
                 setConfirmError(null);
                 setConfirm("delete");
               }}
-              className="rounded-full p-2 text-muted transition-colors hover:bg-danger/10 hover:text-danger"
+              className="rounded-lg p-2 text-muted transition-colors hover:bg-danger/10 hover:text-danger"
               aria-label="Delete draft"
               title="Delete draft"
             >
@@ -596,7 +797,7 @@ export function Composer({ routeId }: { routeId: string | null }) {
             <>
               {estimate > 0 && (
                 <span
-                  className={`hidden whitespace-nowrap text-[12.5px] tabular-nums sm:inline ${
+                  className={`hidden whitespace-nowrap px-1 text-[12px] tabular-nums lg:inline ${
                     shortCredits ? "font-semibold text-danger" : "text-muted"
                   }`}
                   title={
@@ -609,17 +810,21 @@ export function Composer({ routeId }: { routeId: string | null }) {
               )}
               <div className="relative">
                 <button
+                  ref={scheduleButtonRef}
                   disabled={!!blocked || !!busy}
                   onClick={() => setScheduleOpen((o) => !o)}
                   title={blocked ?? (status === "scheduled" ? "Change scheduled time" : "Schedule")}
-                  className="flex h-9 items-center gap-1.5 rounded-full border border-line-strong px-3 text-[14px] font-bold text-ink transition-colors hover:bg-hover disabled:opacity-50 sm:px-4"
+                  aria-label={status === "scheduled" ? "Reschedule" : "Schedule"}
+                  aria-expanded={scheduleOpen}
+                  aria-haspopup="dialog"
+                  className="flex h-8 items-center gap-1.5 rounded-lg bg-schedule px-2.5 text-[13px] font-semibold text-on-schedule transition-colors hover:bg-schedule-hover disabled:opacity-50"
                 >
-                  <IconClock size={16} />
+                  <IconCalendar size={15} className="sm:hidden" />
                   <span className="hidden sm:inline">{status === "scheduled" ? "Reschedule" : "Schedule"}</span>
-                  <IconChevronDown size={14} className="hidden sm:block" />
                 </button>
                 {scheduleOpen && (
                   <SchedulePopover
+                    anchorRef={scheduleButtonRef}
                     tz={tz}
                     initial={draft?.scheduledAt ?? null}
                     busy={busy === "schedule"}
@@ -630,15 +835,12 @@ export function Composer({ routeId }: { routeId: string | null }) {
               </div>
               <button
                 disabled={!!blocked || !!busy}
-                onClick={() => {
-                  setConfirmError(null);
-                  setConfirm("publish");
-                }}
+                onClick={openPublishConfirmation}
                 title={blocked ?? "Publish now"}
-                className="flex h-9 items-center gap-1.5 rounded-full bg-accent px-4 text-[14px] font-bold text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+                aria-keyshortcuts="Meta+Shift+Enter Control+Shift+Enter"
+                className="flex h-8 items-center rounded-lg bg-accent px-2.5 text-[13px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-50 sm:px-3"
               >
-                <IconSend size={15} />
-                <span className="hidden sm:inline">{status === "failed" ? "Retry now" : "Publish"}</span>
+                {status === "failed" ? "Retry" : "Publish"}
               </button>
             </>
           )}
@@ -651,11 +853,24 @@ export function Composer({ routeId }: { routeId: string | null }) {
             </button>
           )}
         </header>
+        )}
       <div className="flex min-h-0 flex-1">
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section
+        aria-label="Thread editor"
+        className={`min-w-0 flex-1 flex-col ${showPreview && !wideViewport ? "hidden" : "flex"}`}
+        onFocusCapture={(event) => {
+          if (!(event.target instanceof HTMLTextAreaElement)) return;
+          for (const [id, input] of inputs.current) {
+            if (input === event.target) {
+              lastFocusedPost.current = id;
+              break;
+            }
+          }
+        }}
+      >
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className={`mx-auto w-full max-w-[600px] pb-40 ${showPreview ? "max-lg:hidden" : ""}`}>
+          <div className={`mx-auto w-full px-1 pb-8 pt-2 sm:px-4 sm:pt-3 ${mobileWidth ? "max-w-[410px]" : "max-w-[620px]"}`}>
             {/* banners */}
             {status === "scheduled" && draft?.scheduledAt && (
               <Banner tone="accent" icon={<IconClock size={18} />}>
@@ -736,6 +951,7 @@ export function Composer({ routeId }: { routeId: string | null }) {
                     me={me}
                     max={max}
                     readOnly={readOnly}
+                    displayMode={writingMode ? "writing" : "social"}
                     showNumber={numbered}
                     autoFocus={!routeId && i === 0 && posts.length === 1}
                     registerInput={registerInput}
@@ -746,53 +962,46 @@ export function Composer({ routeId }: { routeId: string | null }) {
                     onMergeUp={onMergeUp}
                     onFocusSibling={onFocusSibling}
                     onInsertAfter={onInsertAfter}
+                    onMove={onMove}
+                    canMoveUp={i > 0 && !posts[i - 1].tweetId}
+                    canMoveDown={i < posts.length - 1 && !posts[i + 1].tweetId}
                   />
                 ))}
-                {!readOnly && (
-                  <button
-                    onClick={addAtEnd}
-                    className="group flex w-full items-center gap-3 px-4 py-2 text-left"
-                    aria-label="Add post to thread"
-                  >
-                    <div className="flex w-10 justify-center">
-                      <div className="opacity-40 transition-opacity group-hover:opacity-70">
-                        <Avatar src={me?.profileImageUrl} name={me?.name} size={24} />
-                      </div>
-                    </div>
-                    <span className="text-[15px] text-muted transition-colors group-hover:text-accent">
-                      Add another post
-                    </span>
-                  </button>
-                )}
-                {!readOnly && (
-                  <p className="mt-6 px-4 text-center text-[12px] text-faint">
-                    <Kbd>⌘</Kbd>
-                    <Kbd>Enter</Kbd> or three line breaks to start a new post · <Kbd>@</Kbd> to mention ·{" "}
-                    <Kbd>⌫</Kbd> on an empty post to remove it
-                  </p>
-                )}
               </div>
             )}
           </div>
-          {showPreview && (
-            <div className="mx-auto w-full max-w-[600px] lg:hidden">
-              <PreviewHeader onClose={() => setShowPreview(false)} />
-              <Preview posts={posts} me={me} numbered={numbered} />
-            </div>
-          )}
         </div>
+        {!focusMode && (
+          <div role="group" aria-label="Composer display" className="mx-auto mb-3 flex shrink-0 items-center gap-1 rounded-full border border-line bg-sidebar p-1">
+            <button type="button" aria-label="Show post numbers" aria-pressed={numbered} title="Show post numbers" onClick={() => setNumbered(!numbered)}
+              className={`rounded-full p-2 ${numbered ? "bg-accent-soft text-accent" : "text-muted hover:bg-hover"}`}>
+              <IconHash size={15} />
+            </button>
+            <button type="button" aria-label="Writing view" aria-pressed={writingMode} title="Writing view" onClick={() => setWritingMode(!writingMode)}
+              className={`rounded-full p-2 ${writingMode ? "bg-accent-soft text-accent" : "text-muted hover:bg-hover"}`}>
+              <IconPen size={15} />
+            </button>
+            <button type="button" aria-label="Mobile editor width" aria-pressed={mobileWidth} title="Toggle desktop or mobile editor width"
+              aria-keyshortcuts="Meta+Shift+H Control+Shift+H" onClick={() => setMobileWidth(!mobileWidth)}
+              className={`rounded-full px-2 py-1.5 text-xs font-medium ${mobileWidth ? "bg-accent-soft text-accent" : "text-muted hover:bg-hover"}`}>
+              {mobileWidth ? "Mobile" : "Desktop"}
+            </button>
+            <button type="button" aria-label="Focus mode" title="Focus mode" aria-keyshortcuts="Meta+Shift+F Control+Shift+F"
+              onClick={() => changeFocusMode(true)} className="rounded-full p-2 text-muted hover:bg-hover">
+              <IconFocus size={16} />
+            </button>
+          </div>
+        )}
       </section>
 
       {showPreview && (
-        <aside className="hidden w-[360px] shrink-0 flex-col border-l border-line lg:flex xl:w-[420px]">
-          <PreviewHeader onClose={() => setShowPreview(false)} />
-          <div className="min-h-0 flex-1 overflow-y-auto pb-20">
-            <Preview posts={posts} me={me} numbered={numbered} />
-          </div>
+        <aside aria-label="Live preview" className="flex min-h-0 min-w-0 flex-1 flex-col lg:w-[clamp(340px,40vw,560px)] lg:flex-none lg:border-l lg:border-line">
+          <PreviewPanel posts={posts} me={me} numbered={numbered} mobile={mobileDevice} onDeviceChange={setMobileDevice} onClose={closePreview} />
         </aside>
       )}
       </div>
 
+      {commandOpen && active && <CommandBar commands={commands} onClose={() => setCommandOpen(false)} />}
       <ConfirmDialog
         open={confirm === "publish"}
         title={status === "failed" ? "Retry publishing?" : "Publish thread now?"}
@@ -881,26 +1090,6 @@ function FailedReason({ error, balance, onBuy }: { error: string; balance: numbe
       {friendly && message && message !== friendly && (
         <div className="mt-0.5 text-[12px] text-muted">{message}</div>
       )}
-    </div>
-  );
-}
-
-function Kbd({ children }: { children: React.ReactNode }) {
-  return (
-    <kbd className="mx-0.5 rounded border border-line-strong px-1 py-px font-sans text-[11px] text-muted">{children}</kbd>
-  );
-}
-
-function PreviewHeader({ onClose }: { onClose: () => void }) {
-  return (
-    <div className="sticky top-0 z-10 flex h-[53px] items-center justify-between border-b border-line bg-canvas/85 px-4 backdrop-blur-md lg:static">
-      <div>
-        <div className="text-[17px] font-bold leading-5">Preview</div>
-        <div className="text-[12px] text-muted">How your thread will look on X</div>
-      </div>
-      <button onClick={onClose} className="rounded-full px-3 py-1 text-[13px] font-semibold text-muted hover:bg-hover">
-        Hide
-      </button>
     </div>
   );
 }
