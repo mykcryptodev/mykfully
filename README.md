@@ -1,5 +1,7 @@
 # mykfully
 
+[![mykfully: free and open source. Deploy your own on Vercel.](public/og-mykfully.jpg)](https://mykfully.com)
+
 An open-source, self-hostable take on [Typefully](https://typefully.com): write X (Twitter) threads in an editor that looks like X, @mention people with live search, and schedule posts to go out automatically.
 
 Built with Next.js 15 (App Router), Drizzle ORM + Postgres (Neon), and Tailwind. Designed to deploy on Vercel.
