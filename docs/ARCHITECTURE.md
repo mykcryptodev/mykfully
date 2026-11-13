@@ -163,3 +163,16 @@ X does not support x402, so this sells the instance's **own** credits for USDC o
 - Login creates the user `@mykdemo` without OAuth.
 - `postTweet` returns fake ids and logs to the console.
 - `searchUsers` filters a built-in list of ~30 fake users (`@jack`, `@elonmusk`, `@vercel`, `@rauchg`, …).
+
+## Public search and social metadata
+
+Signed-out `/` requests rewrite to the landing page at `/login`. Both share the root
+canonical URL. `/privacy` has its own canonical. Public page metadata includes
+Open Graph and large-image X cards using `public/og-mykfully.jpg` (1920 × 1080).
+The landing page includes WebApplication JSON-LD; private app pages inherit
+`noindex, nofollow` from the root layout.
+
+`APP_URL` supplies the absolute origin for metadata, JSON-LD, `robots.txt`, and
+`sitemap.xml`, so set it to the canonical deployment URL before building. The
+sitemap lists only `/` and `/privacy`; middleware leaves it publicly accessible.
+Robots rules discourage crawling private routes but do not replace authentication.

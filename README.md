@@ -182,3 +182,12 @@ This project uses pnpm with `minimumReleaseAge: 1440` (in `pnpm-workspace.yaml`)
 ## License
 
 MIT
+
+### Search and link previews
+
+Set `APP_URL` to your canonical site URL before building. Public pages generate
+canonical links, Open Graph and X large-image cards. Replace
+`public/og-mykfully.jpg` and its dimensions/alt text in `src/lib/seo.ts` when
+rebranding a self-hosted instance. `/robots.txt` advertises `/sitemap.xml`, which
+lists the landing and privacy pages only. Submit that sitemap in your search
+engine webmaster console after deployment; indexing is controlled by the engine.

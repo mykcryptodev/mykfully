@@ -1,3 +1,4 @@
+import { applicationSchema, publicPageMetadata, siteDescription, siteTitle } from "@/lib/seo";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { ProductPreview } from "@/components/landing/ProductPreview";
@@ -14,10 +15,8 @@ const ERRORS: Record<string, string> = {
 };
 const GENERIC_ERROR = "Sign-in failed. Please try again.";
 
-export const metadata = {
-  title: "mykfully · Write, schedule and publish threads on X",
-  description: "A distraction-free editor for X threads. Write with a live preview, schedule for later and let mykfully publish on time.",
-};
+// The root URL rewrites to this page; /login and query variants consolidate to it.
+export const metadata = publicPageMetadata(siteTitle, siteDescription, "/");
 
 const FEATURES: { icon: ReactNode; title: string; body: string }[] = [
   {
@@ -89,6 +88,10 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
 
   return (
     <div className="min-h-screen bg-canvas text-ink">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(applicationSchema).replace(/</g, "\\u003c") }}
+      />
       <header className="sticky top-0 z-20 border-b border-line bg-canvas/85 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
           <span className="flex items-center gap-2.5">

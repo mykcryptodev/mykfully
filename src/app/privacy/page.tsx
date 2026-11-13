@@ -1,9 +1,7 @@
 import Link from "next/link";
+import { publicPageMetadata } from "@/lib/seo";
 
-export const metadata = {
-  title: "Privacy · mykfully",
-  description: "What mykfully stores and why.",
-};
+export const metadata = publicPageMetadata("Privacy · mykfully", "What mykfully stores and why.", "/privacy");
 
 export default function PrivacyPage() {
   return (

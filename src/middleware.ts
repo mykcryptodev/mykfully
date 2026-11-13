@@ -51,5 +51,5 @@ export async function middleware(req: NextRequest) {
 
 export const config = {
   // Everything except /login, /api/**, Next internals, and real static asset extensions.
-  matcher: ["/((?!login(?:/|$)|privacy(?:/|$)|api/|_next/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|txt|woff2?)$).*)"],
+  matcher: ["/((?!login(?:/|$)|privacy(?:/|$)|sitemap\\.xml$|api/|_next/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|txt|woff2?)$).*)"],
 };
