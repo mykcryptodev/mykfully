@@ -104,20 +104,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .me()
       .then(async ({ user }) => {
         setMe(user);
-        // First run: adopt the browser's timezone instead of the UTC default (once per browser).
+        // First run: adopt the browser's timezone instead of the UTC default (once per account per browser).
+        // Keyed by user so switching accounts in one browser doesn't leave the second account on UTC.
+        const flagKey = `myk_tz_adopted:${user.id}`;
         let adopted = false;
         try {
-          adopted = localStorage.getItem("myk_tz_adopted") === "1";
+          adopted = localStorage.getItem(flagKey) === "1";
         } catch {}
+        if (adopted) return;
         const browserTz = browserTimezone();
-        if (!adopted && user.timezone === "UTC" && browserTz !== "UTC") {
+        if (user.timezone === "UTC" && browserTz !== "UTC") {
           try {
             const res = await api.setTimezone(browserTz);
             setMe(res.user);
-          } catch {}
+          } catch {
+            return; // leave the flag unset so the next load retries
+          }
         }
         try {
-          localStorage.setItem("myk_tz_adopted", "1");
+          localStorage.setItem(flagKey, "1");
         } catch {}
       })
       .catch(() => {});
