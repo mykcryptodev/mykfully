@@ -140,8 +140,9 @@ export function AgentsModal({ open, onClose }: { open: boolean; onClose: () => v
           <h2 id={titleId} className="text-lg font-bold text-ink">Connect an agent</h2>
           <p className="mt-1 text-[13px] leading-[18px] text-muted">
             Agents can always draft threads, render X previews and check or buy credits over MCP. Scheduling, publishing
-            and deleting are off unless you allow them for a token. You can change this any time, and it applies to the
-            agent’s next request.
+            and deleting are off unless you allow them for a token. You can change this any time: turning a permission
+            off applies to the agent’s next request; after turning one on, the agent may need to reconnect to see the new
+            tools.
           </p>
         </div>
         <button onClick={onClose} className="rounded-full p-1.5 text-muted hover:bg-hover hover:text-ink" aria-label="Close">

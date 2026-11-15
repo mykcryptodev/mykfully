@@ -108,7 +108,7 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 | `pnpm dev:local` / `dev:preview` / `dev:prod` | Runs `next dev` against an explicit database. See "Choosing a database" below. |
 | `pnpm typecheck` | Runs `tsc --noEmit`. |
 | `pnpm lint` | Runs ESLint (`next/core-web-vitals` and `next/typescript`). |
-| `pnpm test` | Runs `vitest run`: 12 files and about 133 tests, about 12 seconds. |
+| `pnpm test` | Runs `vitest run`: 12 files and about 142 tests, about 13 seconds. |
 | `pnpm build` | Runs `node scripts/migrate.mjs && next build`. **Unset `DATABASE_URL` locally** unless you really mean to migrate that database. |
 | `pnpm db:generate` | Runs `drizzle-kit generate` from `schema.ts` into `drizzle/`. No DB is needed. |
 | `pnpm db:migrate` | Runs `drizzle-kit migrate` against `DATABASE_URL`. Rarely needed, since the build and startup already migrate. |
@@ -264,6 +264,7 @@ Breaking any of these causes double posts, lost money, account takeover or data 
     - Never accept a token on a session route, and never let an agent route fall back to the cookie: that combination reopens CSRF.
     - Scheduling, publishing and deleting need the token's `can_schedule` / `can_publish` / `can_delete`, read from the DB on every request (never cached or put in the token). Enforce them in `tools/call`, not only by hiding tools in `tools/list`.
     - Agent actions reuse the app's code paths: `publishNow` (`src/lib/publish-now.ts`), `updateDraft`, `deleteDraft`. Never add an agent-only publish path. Without `schedule`, `update_draft` passes `["draft"]`.
+    - Agents must never re-run a `publish_uncertain` thread (`assertNotUncertain` in `mcp/tools.ts`); that retry is the user's, after checking X.
     - Store only `sha256(token)`; never log tokens.
 17. **Never commit secrets or `.env*` files.** Only `.env.example` is tracked, and it must hold no real values. Never put real tokens, X ids of real users, or the instance URL in code, tests or docs.
 

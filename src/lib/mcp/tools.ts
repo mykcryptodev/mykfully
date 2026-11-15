@@ -94,6 +94,21 @@ function postView(p: Pick<ThreadPost, "id" | "text" | "media" | "tweetId">, veri
   };
 }
 
+/**
+ * A thread whose last attempt ended `publish_uncertain` may already be partly on X. The app lets the user retry
+ * after checking X themselves; agents never may, whatever the status (unscheduling keeps last_error), until the
+ * user reschedules or publishes it in the app (which clears last_error).
+ */
+async function assertNotUncertain(db: DB, userId: string, draftId: string): Promise<void> {
+  const row = await getDraft(db, userId, draftId);
+  if (!row) throw new HttpError(404, "Draft not found");
+  if (row.lastError?.startsWith("[publish_uncertain]")) {
+    throw new HttpError(409, "This thread's last publish may have partly posted to X. The user must check X and retry it in the app.", {
+      code: "publish_uncertain_review",
+    });
+  }
+}
+
 const postText = z.string().max(MAX_DRAFT_POST_CODE_UNITS).describe("Post text. Mentions, hashtags and URLs are counted the way X counts them.");
 const deviceSchema = z.enum(["mobile", "desktop"]).default("mobile").describe("Mobile (393px wide, the default) or desktop (600px).");
 const themeSchema = z.enum(["light", "dark"]).default("light");
@@ -254,6 +269,7 @@ export const TOOLS = [
     readOnly: false,
     scope: "schedule",
     async run({ db, userId }, { draftId, scheduledAt }) {
+      await assertNotUncertain(db, userId, draftId);
       const row = await updateDraft(db, userId, draftId, { scheduledAt });
       const u = await author(db, userId);
       return json({ draft: agentDraft(row, u.verifiedType) });
@@ -286,6 +302,7 @@ export const TOOLS = [
     openWorld: true,
     async run({ db, userId }, { draftId }) {
       await limitNamed(db, "publish", userId);
+      await assertNotUncertain(db, userId, draftId);
       const out = await publishNow(db, userId, draftId);
       const u = await author(db, userId);
       const draft = agentDraft(out.draft, u.verifiedType);

@@ -7,7 +7,7 @@ description: Draft X (Twitter) posts and threads in a mykfully instance, render 
 
 mykfully is a self-hosted thread composer for X. Its MCP server lets you draft threads for the user, preview them as they will appear on X, and manage credits.
 
-**Permissions.** Drafting is always allowed. Scheduling, publishing and deleting are per-token permissions the user grants, and can revoke at any time, under **Connect an agent**. Check `get_account` → `permissions`. Tools you aren't allowed to use are left out of the tool list, and calling one returns `permission_denied`; when that happens, tell the user they can do it in the app or enable it for this token. Permissions can change between calls, so don't assume one that worked earlier still does. Never tell the user a post went out unless `publish_draft` returned `published: true`.
+**Permissions.** Drafting is always allowed. Scheduling, publishing and deleting are per-token permissions the user grants, and can revoke at any time, under **Connect an agent**. Check `get_account` → `permissions`. Tools you aren't allowed to use are left out of the tool list, and calling one returns `permission_denied`; when that happens, tell the user they can do it in the app or enable it for this token. Permissions can change between calls, so don't assume one that worked earlier still does. If the user says they just enabled a permission but the tool isn't in your list, your client cached the old list; ask them to reconnect the mykfully MCP server (for example `/mcp` in Claude Code). Never tell the user a post went out unless `publish_draft` returned `published: true`.
 
 ## Setup (once)
 
@@ -60,6 +60,7 @@ Keep the token secret: anyone holding it can draft as the user and spend USDC on
 ## Scheduling, publishing, deleting (only if permitted)
 
 - **Schedule:** confirm the exact time and the user's timezone, then call `schedule_draft`. The thread is published automatically at that time. `unschedule_draft` cancels it.
+- **Never retry a thread whose last publish was uncertain.** `publish_uncertain_review` means part of it may already be on X; the user must check X and handle it in the app.
 - **Publish now:** only when the user has explicitly asked you to post this exact thread now. Preview it first and check `estimatedCredits` against the balance.
   - On success, `published: true` and every post has a `tweetUrl`.
   - Failures are final; the thread is marked failed and never retried automatically.
@@ -97,6 +98,7 @@ Tool errors come back as `isError` results with `{ error, code }`. The common co
 
 - `invalid_request`: fix the arguments using the `issues` list.
 - `rate_limited`: wait `retryAfter` seconds.
+- `publish_uncertain_review`: the thread's last publish may have partly posted. Hand it to the user; don't retry.
 - `permission_denied`: this token can't do that (see `permission`). The user can do it in the app or allow it under **Connect an agent**.
 - `error` + "Draft is scheduled and can't be edited": you need the schedule permission, or the user changes it in the app.
 - `insufficient_credits` / `credit_cap_reached`: not enough credits to schedule or publish. Offer `buy_credits`, or tell the user.

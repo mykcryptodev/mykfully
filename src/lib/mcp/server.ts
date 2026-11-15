@@ -27,7 +27,7 @@ export function instructionsFor(scopes: TokenScopes): string {
     allowed.length ? `This token may also ${allowed.join(", ")}.` : "",
     scopes.publish ? "publish_draft posts publicly and spends credits: only when the user explicitly asks to post that thread now." : "",
     scopes.schedule ? "Confirm the time and timezone before schedule_draft." : "",
-    denied.length ? `This token can't ${denied.join(" or ")}; the user does that in the app (or enables it for this token under Connect an agent). Never claim a post went out unless publish_draft returned published: true.` : "",
+    denied.length ? `This token can't ${denied.join(" or ")}; the user does that in the app (or enables it for this token under Connect an agent, after which this client may need to reconnect to see the tools). Never claim a post went out unless publish_draft returned published: true.` : "",
     "Keep every post within maxLength (fits=true). For a thread, split at natural sentence boundaries.",
     "buy_credits explains the x402 purchase; always confirm the price with the user before paying.",
   ].filter(Boolean).join(" ");

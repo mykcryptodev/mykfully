@@ -21,6 +21,7 @@ import { appendMediaChunk, startMediaUpload } from "@/lib/media";
 import { MEDIA_CHUNK_SIZE, type MediaAttachment, type MediaContentType } from "@/lib/media-types";
 import { setFacilitatorClient } from "@/lib/payments/x402";
 import { getBalance } from "@/lib/credits";
+import { resetMockCounters } from "@/lib/x/mock";
 import { POST as mcpRoute } from "@/app/api/mcp/route";
 import { POST as agentPurchaseRoute } from "@/app/api/agent/credits/purchase/route";
 import { installTestDb, setAuthEnv } from "./auth-helpers";
@@ -296,6 +297,45 @@ describe("token permissions", () => {
     // Credits are checked when scheduling, as in the app.
     const poor = body(await call("u2", "create_draft", { posts: [{ text: "no credits" }] })).draft;
     expect(body(await call("u2", "schedule_draft", { draftId: poor.id, scheduledAt: at }, s))).toMatchObject({ code: "insufficient_credits" });
+  });
+
+  it("never re-runs a thread whose last publish was uncertain (it may be partly on X)", async () => {
+    process.env.MOCK_X = "1";
+    try {
+      const draft = body(await call("u1", "create_draft", { posts: [{ text: "maybe posted" }] })).draft;
+      await db.update(schema.drafts).set({ status: "failed", lastError: "[publish_uncertain] X may have posted" }).where(eq(schema.drafts.id, draft.id));
+      const at = new Date(Date.now() + 3_600_000).toISOString();
+      expect(body(await call("u1", "publish_draft", { draftId: draft.id }, ALL))).toMatchObject({ code: "publish_uncertain_review" });
+      expect(body(await call("u1", "schedule_draft", { draftId: draft.id, scheduledAt: at }, ALL))).toMatchObject({ code: "publish_uncertain_review" });
+      // Unscheduling moves it to "draft" but keeps last_error, so it still can't be published or scheduled.
+      expect(body(await call("u1", "unschedule_draft", { draftId: draft.id }, ALL)).draft.status).toBe("draft");
+      expect(body(await call("u1", "publish_draft", { draftId: draft.id }, ALL))).toMatchObject({ code: "publish_uncertain_review" });
+      expect(body(await call("u1", "schedule_draft", { draftId: draft.id, scheduledAt: at }, ALL))).toMatchObject({ code: "publish_uncertain_review" });
+      const [row] = await db.select().from(schema.drafts).where(eq(schema.drafts.id, draft.id));
+      expect(row.posts[0].tweetId).toBeUndefined();
+      expect(await getBalance(db, "u1")).toBe(100); // nothing posted, nothing charged
+    } finally {
+      delete process.env.MOCK_X;
+    }
+  });
+
+  it("publish failures come back as errors carrying the failed draft", async () => {
+    process.env.MOCK_X = "1";
+    process.env.MOCK_X_FAIL_AFTER = "2";
+    resetMockCounters(); // the mock's post counter is process-wide
+    try {
+      const draft = body(await call("u1", "create_draft", { posts: [{ text: "one" }, { text: "two" }] })).draft;
+      const res = await call("u1", "publish_draft", { draftId: draft.id }, { ...NO_SCOPES, publish: true });
+      expect(res.isError).toBe(true);
+      const out = body(res);
+      expect(out.code).toBeTruthy();
+      expect(out.draft).toMatchObject({ id: draft.id, status: "failed" });
+      expect(out.draft.posts[0].tweetId).toBeTruthy(); // the first post went out and is recorded (resume-safe)
+      expect(out.draft.posts[1].tweetId).toBeUndefined();
+    } finally {
+      delete process.env.MOCK_X;
+      delete process.env.MOCK_X_FAIL_AFTER;
+    }
   });
 
   it("delete: removes only the user's own thread", async () => {
