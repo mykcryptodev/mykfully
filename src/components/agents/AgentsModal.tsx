@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import { api, type ApiToken } from "../lib/api";
+import { api, type ApiToken, type TokenScopes } from "../lib/api";
 import { relativeShort } from "../lib/time";
 import { useApp } from "../app/AppProvider";
 import { Modal } from "../ui/Modal";
@@ -36,7 +36,41 @@ function CopyBlock({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** Create/revoke API tokens and show how to connect an agent over MCP. */
+const NO_SCOPES: TokenScopes = { schedule: false, publish: false, delete: false };
+
+const PERMISSIONS: { key: keyof TokenScopes; label: string; hint: string; danger?: boolean }[] = [
+  { key: "schedule", label: "Schedule", hint: "Schedule and unschedule threads, and edit scheduled ones." },
+  { key: "publish", label: "Publish now", hint: "Post to X immediately. Public, can’t be undone, spends credits.", danger: true },
+  { key: "delete", label: "Delete", hint: "Permanently delete threads from mykfully.", danger: true },
+];
+
+/** Checkboxes for a token's opt-in permissions. Drafting and previews are always allowed. */
+function PermissionChecks({
+  value, onChange, disabled, idPrefix,
+}: { value: TokenScopes; onChange: (key: keyof TokenScopes, on: boolean) => void; disabled?: boolean; idPrefix: string }) {
+  return (
+    <fieldset className="mt-2 flex flex-col gap-1.5" disabled={disabled}>
+      <legend className="sr-only">Permissions</legend>
+      {PERMISSIONS.map((p) => (
+        <label key={p.key} htmlFor={`${idPrefix}-${p.key}`} className="flex cursor-pointer items-start gap-2 text-[13px] leading-[17px]">
+          <input
+            id={`${idPrefix}-${p.key}`}
+            type="checkbox"
+            checked={value[p.key]}
+            onChange={(e) => onChange(p.key, e.target.checked)}
+            className="mt-0.5 accent-[var(--accent)]"
+          />
+          <span>
+            <span className={`font-semibold ${p.danger ? "text-danger" : "text-ink"}`}>{p.label}</span>
+            <span className="text-muted"> · {p.hint}</span>
+          </span>
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+/** Create/revoke API tokens, set what each may do, and show how to connect an agent over MCP. */
 export function AgentsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { me, toast } = useApp();
   const titleId = useId();
@@ -45,6 +79,8 @@ export function AgentsModal({ open, onClose }: { open: boolean; onClose: () => v
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
+  const [scopes, setScopes] = useState<TokenScopes>(NO_SCOPES);
+  const [saving, setSaving] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -60,14 +96,30 @@ export function AgentsModal({ open, onClose }: { open: boolean; onClose: () => v
     setBusy(true);
     setError(null);
     try {
-      const r = await api.createToken(name.trim() || "Agent");
+      const r = await api.createToken(name.trim() || "Agent", scopes);
       setCreated(r.token);
       setTokens((t) => [r.apiToken, ...(t ?? [])]);
       setName("");
+      setScopes(NO_SCOPES);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't create token");
     } finally {
       setBusy(false);
+    }
+  };
+
+  /** Saved immediately; the token's next request uses the new permissions. */
+  const toggle = async (t: ApiToken, key: keyof TokenScopes, on: boolean) => {
+    setSaving(t.id);
+    setTokens((list) => (list ?? []).map((x) => (x.id === t.id ? { ...x, scopes: { ...x.scopes, [key]: on } } : x)));
+    try {
+      const r = await api.updateTokenScopes(t.id, { [key]: on });
+      setTokens((list) => (list ?? []).map((x) => (x.id === t.id ? r.apiToken : x)));
+    } catch (e) {
+      setTokens((list) => (list ?? []).map((x) => (x.id === t.id ? t : x)));
+      toast(e instanceof Error ? e.message : "Couldn't update permissions", "error");
+    } finally {
+      setSaving(null);
     }
   };
 
@@ -87,8 +139,9 @@ export function AgentsModal({ open, onClose }: { open: boolean; onClose: () => v
         <div>
           <h2 id={titleId} className="text-lg font-bold text-ink">Connect an agent</h2>
           <p className="mt-1 text-[13px] leading-[18px] text-muted">
-            Agents can draft threads, render X previews and check or buy credits over MCP. They can’t schedule, publish or
-            delete: you review every draft here first.
+            Agents can always draft threads, render X previews and check or buy credits over MCP. Scheduling, publishing
+            and deleting are off unless you allow them for a token. You can change this any time, and it applies to the
+            agent’s next request.
           </p>
         </div>
         <button onClick={onClose} className="rounded-full p-1.5 text-muted hover:bg-hover hover:text-ink" aria-label="Close">
@@ -103,12 +156,13 @@ export function AgentsModal({ open, onClose }: { open: boolean; onClose: () => v
         </div>
       ) : (
         <form
-          className="mt-4 flex gap-2"
+          className="mt-4"
           onSubmit={(e) => {
             e.preventDefault();
             void create();
           }}
         >
+          <div className="flex gap-2">
           <input
             data-autofocus
             value={name}
@@ -126,6 +180,8 @@ export function AgentsModal({ open, onClose }: { open: boolean; onClose: () => v
             {busy && <Spinner size={14} />}
             Create token
           </button>
+          </div>
+          <PermissionChecks idPrefix="new" value={scopes} onChange={(k, on) => setScopes((s) => ({ ...s, [k]: on }))} />
         </form>
       )}
       {error && <p className="mt-2 text-[13px] text-danger">{error}</p>}
@@ -149,13 +205,14 @@ export function AgentsModal({ open, onClose }: { open: boolean; onClose: () => v
         ) : (
           <ul className="mt-2 divide-y divide-line rounded-lg border border-line">
             {tokens.map((t) => (
-              <li key={t.id} className="flex items-center gap-3 px-3 py-2">
+              <li key={t.id} className="flex items-start gap-3 px-3 py-2">
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[13.5px] font-semibold text-ink">{t.name}</div>
                   <div className="text-xs text-muted">
                     <code className="font-mono">{t.prefix}…</code> · created {relativeShort(t.createdAt, me?.timezone ?? "UTC")}
                     {t.lastUsedAt ? ` · used ${relativeShort(t.lastUsedAt, me?.timezone ?? "UTC")}` : " · never used"}
                   </div>
+                  <PermissionChecks idPrefix={t.id} value={t.scopes} disabled={saving === t.id} onChange={(k, on) => void toggle(t, k, on)} />
                 </div>
                 <button
                   onClick={() => revoke(t)}

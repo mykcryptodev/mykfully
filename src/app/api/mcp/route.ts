@@ -1,4 +1,4 @@
-import { requireAgentUserId } from "@/lib/api-tokens";
+import { requireAgent } from "@/lib/api-tokens";
 import { getDb } from "@/lib/db";
 import { env } from "@/lib/env";
 import { errorResponse, HttpError } from "@/lib/errors";
@@ -12,7 +12,8 @@ const MAX_BODY_BYTES = 512 * 1024;
 
 /**
  * Remote MCP endpoint (Streamable HTTP, stateless, JSON responses). Auth: `Authorization: Bearer myk_…`
- * (an API token from the app's Agents panel). Cookies are ignored, so no CSRF checks are needed; a present
+ * (an API token from the app's Agents panel). The token's permissions (schedule/publish/delete) are read from the
+ * database on every request, so changes in the app apply to the next call. Cookies are ignored, so no CSRF checks are needed; a present
  * Origin header must still be our own (the spec's DNS-rebinding guard).
  */
 export async function POST(req: Request) {
@@ -27,7 +28,7 @@ export async function POST(req: Request) {
       throw new HttpError(415, "Content-Type must be application/json");
     }
     const db = await getDb();
-    const userId = await requireAgentUserId(db, req);
+    const auth = await requireAgent(db, req); // permissions are read fresh on every request
 
     const raw = await req.text();
     if (raw.length > MAX_BODY_BYTES) throw new HttpError(413, "Request too large");
@@ -37,7 +38,7 @@ export async function POST(req: Request) {
     } catch {
       return Response.json({ jsonrpc: "2.0", id: null, error: { code: RPC.parse, message: "Parse error" } }, { status: 400 });
     }
-    const out = await handleMcpMessage(db, userId, body);
+    const out = await handleMcpMessage(db, auth, body);
     if (!out) return new Response(null, { status: 202 });
     return Response.json(out, { headers: { "Cache-Control": "no-store" } });
   } catch (e) {

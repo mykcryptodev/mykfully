@@ -108,7 +108,7 @@ AI agents can draft for you. mykfully includes a remote [MCP](https://modelconte
 - check the credit balance;
 - buy credits with USDC over x402, if purchases are enabled.
 
-**Agents can't schedule, publish or delete.** You review every draft in the app.
+**You choose what each agent can do.** Drafting and previews are always allowed. **Schedule**, **Publish now** and **Delete** are checkboxes on each token, all off by default. You can change them at any time in **Connect an agent**, and the change applies to the agent's next request. A token without a permission doesn't see those tools, and calls to them are refused.
 
 1. In the app, open the sidebar, choose **Connect an agent** and create a token. Copy it; it's shown once.
 2. Add the server to your agent. For example, in Claude Code:
@@ -119,7 +119,7 @@ AI agents can draft for you. mykfully includes a remote [MCP](https://modelconte
 
 3. Give the agent the skill in [`skills/mykfully/SKILL.md`](skills/mykfully/SKILL.md). It covers the workflow, length rules and the x402 purchase steps.
 
-**Tools:** `get_account`, `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `preview_draft`, `get_credits`, `buy_credits`.
+**Tools:** `get_account`, `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `preview_draft`, `get_credits` and `buy_credits`, plus, when permitted, `schedule_draft` / `unschedule_draft` (schedule), `publish_draft` (publish) and `delete_draft` (delete). Agent publishing runs exactly the same checks, credit metering and double-post protection as the app's **Publish now**.
 
 **Buying credits:** agents pay over x402 at `POST /api/agent/credits/purchase`. It works like the in-app purchase, but authenticates with the same token. `buy_credits` returns the exact request; any x402 client can send it (for example the Base MCP server's `initiate_x402_request`).
 
@@ -199,7 +199,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - **X tokens:** encrypted with AES-256-GCM, bound to the user id. Refresh is coordinated across serverless instances with a database claim. If X revokes access, the user is asked to reconnect.
 - **Sessions:** signed with HS256 using a secret of at least 32 bytes, and stored in a `__Host-` cookie in production. Sessions can be revoked: logout invalidates every session for that account.
-- **Agent tokens:** API tokens are stored hashed. They are accepted only by the MCP and agent purchase routes, as a bearer header (never a cookie), so they can't publish, administer, or be used for CSRF. Revoke them under **Connect an agent**.
+- **Agent tokens:** API tokens are stored hashed. They are accepted only by the MCP and agent purchase routes, as a bearer header (never a cookie), so they can't administer or be used for CSRF. Scheduling, publishing and deleting each need a per-token permission, checked on every request. Revoke tokens or change their permissions under **Connect an agent**.
 - **Request checks:** state-changing requests must come from your own `APP_URL` origin (CSRF protection). The credit-spending mention search also rejects cross-site requests (`Sec-Fetch-Site`, falling back to Referer).
 - **Headers:** a strict Content-Security-Policy and other security headers are set.
 - **Error messages:** errors shown to users are sanitized, so database details never leak.

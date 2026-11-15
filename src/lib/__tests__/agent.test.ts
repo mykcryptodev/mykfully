@@ -10,7 +10,10 @@ vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => undefined, s
 
 import * as schema from "@/lib/db/schema";
 import type { DB } from "@/lib/db";
-import { createApiToken, hashToken, listApiTokens, requireAgentUserId, resolveApiToken, revokeApiToken, MAX_TOKENS_PER_USER } from "@/lib/api-tokens";
+import {
+  createApiToken, hashToken, listApiTokens, requireAgentUserId, resolveApiToken, revokeApiToken, updateApiTokenScopes,
+  MAX_TOKENS_PER_USER, NO_SCOPES, type TokenScopes,
+} from "@/lib/api-tokens";
 import { handleMcpMessage } from "@/lib/mcp/server";
 import sharp from "sharp";
 import { imageSize, renderThreadPreview, PREVIEW_MAX_BYTES } from "@/lib/preview";
@@ -45,8 +48,9 @@ const bearer = (t: string) => ({ authorization: `Bearer ${t}` });
 const req = (headers: Record<string, string> = {}) => new Request(`${ORIGIN}/api/mcp`, { method: "POST", headers });
 
 type ToolOut = { content: { type: string; text?: string; data?: string; mimeType?: string }[]; isError?: boolean; structuredContent?: Record<string, unknown> };
-async function call(userId: string, name: string, args: Record<string, unknown> = {}): Promise<ToolOut> {
-  const res = await handleMcpMessage(db, userId, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+const ALL: TokenScopes = { schedule: true, publish: true, delete: true };
+async function call(userId: string, name: string, args: Record<string, unknown> = {}, scopes: TokenScopes = NO_SCOPES): Promise<ToolOut> {
+  const res = await handleMcpMessage(db, { userId, scopes }, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
   expect(res && "result" in res).toBe(true);
   return (res as { result: ToolOut }).result;
 }
@@ -59,7 +63,7 @@ describe("API tokens", () => {
     const [stored] = await db.select().from(schema.apiTokens).where(eq(schema.apiTokens.id, row.id));
     expect(stored.tokenHash).toBe(hashToken(token));
     expect(JSON.stringify(stored)).not.toContain(token);
-    expect(await resolveApiToken(db, token)).toBe("u1");
+    expect(await resolveApiToken(db, token)).toMatchObject({ userId: "u1", scopes: NO_SCOPES });
     expect((await db.select().from(schema.apiTokens))[0].lastUsedAt).not.toBeNull();
 
     await expect(revokeApiToken(db, "u2", row.id)).rejects.toMatchObject({ status: 404 }); // not bob's
@@ -91,23 +95,23 @@ describe("API tokens", () => {
 
 describe("MCP protocol", () => {
   it("initializes, negotiates the protocol version and lists the draft-only tools", async () => {
-    const init = await handleMcpMessage(db, "u1", { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } } });
+    const init = await handleMcpMessage(db, { userId: "u1", scopes: NO_SCOPES }, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } } });
     expect(init).toMatchObject({ id: 1, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "mykfully" } } });
-    const fallback = await handleMcpMessage(db, "u1", { jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "1999-01-01" } });
+    const fallback = await handleMcpMessage(db, { userId: "u1", scopes: NO_SCOPES }, { jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "1999-01-01" } });
     expect((fallback as { result: { protocolVersion: string } }).result.protocolVersion).toBe("2025-11-25");
 
-    const list = (await handleMcpMessage(db, "u1", { jsonrpc: "2.0", id: 3, method: "tools/list" })) as { result: { tools: { name: string; inputSchema: { type: string } }[] } };
+    const list = (await handleMcpMessage(db, { userId: "u1", scopes: NO_SCOPES }, { jsonrpc: "2.0", id: 3, method: "tools/list" })) as { result: { tools: { name: string; inputSchema: { type: string } }[] } };
     const names = list.result.tools.map((t) => t.name);
     expect(names).toEqual(["get_account", "list_drafts", "get_draft", "create_draft", "update_draft", "preview_draft", "get_credits", "buy_credits"]);
-    expect(names.some((n) => /publish|schedule|delete/.test(n))).toBe(false);
+    expect(names.some((n) => /publish|schedule|delete/.test(n))).toBe(false); // nothing beyond drafting by default
     for (const t of list.result.tools) expect(t.inputSchema.type).toBe("object");
   });
 
   it("ignores notifications and rejects unknown methods and batches", async () => {
-    expect(await handleMcpMessage(db, "u1", { jsonrpc: "2.0", method: "notifications/initialized" })).toBeNull();
-    expect(await handleMcpMessage(db, "u1", { jsonrpc: "2.0", id: 9, method: "resources/list" })).toMatchObject({ error: { code: -32601 } });
-    expect(await handleMcpMessage(db, "u1", [{ jsonrpc: "2.0", id: 1, method: "ping" }])).toMatchObject({ error: { code: -32600 } });
-    expect(await handleMcpMessage(db, "u1", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "publish_now" } })).toMatchObject({ error: { code: -32602 } });
+    expect(await handleMcpMessage(db, { userId: "u1", scopes: NO_SCOPES }, { jsonrpc: "2.0", method: "notifications/initialized" })).toBeNull();
+    expect(await handleMcpMessage(db, { userId: "u1", scopes: NO_SCOPES }, { jsonrpc: "2.0", id: 9, method: "resources/list" })).toMatchObject({ error: { code: -32601 } });
+    expect(await handleMcpMessage(db, { userId: "u1", scopes: NO_SCOPES }, [{ jsonrpc: "2.0", id: 1, method: "ping" }])).toMatchObject({ error: { code: -32600 } });
+    expect(await handleMcpMessage(db, { userId: "u1", scopes: NO_SCOPES }, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "publish_now" } })).toMatchObject({ error: { code: -32602 } });
   });
 });
 
@@ -231,6 +235,102 @@ describe("preview media", () => {
   }, 60_000);
 });
 
+describe("token permissions", () => {
+  it("default to off, can be set at creation and changed later (partial updates, owner only)", async () => {
+    const plain = await createApiToken(db, "u1", { name: "plain" });
+    expect(await resolveApiToken(db, plain.token)).toMatchObject({ scopes: NO_SCOPES });
+    const pub = await createApiToken(db, "u1", { name: "pub", scopes: { publish: true } });
+    expect(await resolveApiToken(db, pub.token)).toMatchObject({ scopes: { schedule: false, publish: true, delete: false } });
+
+    await updateApiTokenScopes(db, "u1", plain.row.id, { scopes: { schedule: true, delete: true } });
+    expect(await resolveApiToken(db, plain.token)).toMatchObject({ scopes: { schedule: true, publish: false, delete: true } });
+    await updateApiTokenScopes(db, "u1", plain.row.id, { scopes: { delete: false } });
+    expect(await resolveApiToken(db, plain.token)).toMatchObject({ scopes: { schedule: true, publish: false, delete: false } });
+
+    await expect(updateApiTokenScopes(db, "u2", plain.row.id, { scopes: { publish: true } })).rejects.toMatchObject({ status: 404 });
+    await expect(updateApiTokenScopes(db, "u1", plain.row.id, { scopes: { admin: true } })).rejects.toBeTruthy(); // unknown keys rejected
+    await revokeApiToken(db, "u1", plain.row.id);
+    await expect(updateApiTokenScopes(db, "u1", plain.row.id, { scopes: { publish: true } })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("lists only permitted tools and refuses the rest at call time", async () => {
+    const list = (s: TokenScopes) =>
+      handleMcpMessage(db, { userId: "u1", scopes: s }, { jsonrpc: "2.0", id: 1, method: "tools/list" }).then(
+        (r) => (r as { result: { tools: { name: string; annotations: { destructiveHint: boolean; openWorldHint: boolean } }[] } }).result.tools,
+      );
+    const all = await list(ALL);
+    expect(all.map((t) => t.name)).toEqual(expect.arrayContaining(["schedule_draft", "unschedule_draft", "publish_draft", "delete_draft"]));
+    expect(all.find((t) => t.name === "publish_draft")?.annotations).toMatchObject({ destructiveHint: true, openWorldHint: true });
+    expect((await list({ ...NO_SCOPES, delete: true })).map((t) => t.name)).toContain("delete_draft");
+    expect((await list({ ...NO_SCOPES, delete: true })).map((t) => t.name)).not.toContain("publish_draft");
+
+    const draft = body(await call("u1", "create_draft", { posts: [{ text: "hi" }] })).draft;
+    for (const [name, args] of [["publish_draft", {}], ["schedule_draft", { scheduledAt: new Date(Date.now() + 3_600_000).toISOString() }], ["delete_draft", {}]] as const) {
+      const res = await call("u1", name, { draftId: draft.id, ...args });
+      expect(res.isError).toBe(true);
+      expect(body(res)).toMatchObject({ code: "permission_denied" });
+    }
+    const [row] = await db.select().from(schema.drafts).where(eq(schema.drafts.id, draft.id));
+    expect(row.status).toBe("draft");
+  });
+
+  it("schedule: schedules with the app's checks, edits scheduled threads, unschedules", async () => {
+    const s = { ...NO_SCOPES, schedule: true };
+    const draft = body(await call("u1", "create_draft", { posts: [{ text: "x".repeat(281) }] })).draft;
+    const at = new Date(Date.now() + 3_600_000).toISOString();
+    const tooLong = await call("u1", "schedule_draft", { draftId: draft.id, scheduledAt: at }, s);
+    expect(body(tooLong)).toMatchObject({ code: "post_too_long" });
+
+    await call("u1", "update_draft", { draftId: draft.id, posts: [{ id: draft.posts[0].id, text: "ok now" }] }, s);
+    const scheduled = body(await call("u1", "schedule_draft", { draftId: draft.id, scheduledAt: at }, s)).draft;
+    expect(scheduled).toMatchObject({ status: "scheduled", scheduledAt: at });
+    expect(body(await call("u1", "schedule_draft", { draftId: draft.id, scheduledAt: new Date(Date.now() - 3_600_000).toISOString() }, s)).error).toMatch(/future/);
+
+    // With the schedule permission a scheduled thread can be edited (and stays scheduled); without it, it can't.
+    expect((await call("u1", "update_draft", { draftId: draft.id, posts: [{ text: "edited" }] })).isError).toBe(true);
+    expect(body(await call("u1", "update_draft", { draftId: draft.id, posts: [{ text: "edited" }] }, s)).draft).toMatchObject({ status: "scheduled" });
+
+    expect(body(await call("u1", "unschedule_draft", { draftId: draft.id }, s)).draft).toMatchObject({ status: "draft", scheduledAt: null });
+    expect((await call("u1", "unschedule_draft", { draftId: draft.id }, s)).isError).toBe(true); // already a draft
+
+    // Credits are checked when scheduling, as in the app.
+    const poor = body(await call("u2", "create_draft", { posts: [{ text: "no credits" }] })).draft;
+    expect(body(await call("u2", "schedule_draft", { draftId: poor.id, scheduledAt: at }, s))).toMatchObject({ code: "insufficient_credits" });
+  });
+
+  it("delete: removes only the user's own thread", async () => {
+    const d = { ...NO_SCOPES, delete: true };
+    const draft = body(await call("u1", "create_draft", { posts: [{ text: "bye" }] })).draft;
+    expect((await call("u2", "delete_draft", { draftId: draft.id }, d)).isError).toBe(true);
+    expect(body(await call("u1", "delete_draft", { draftId: draft.id }, d))).toEqual({ deleted: true, draftId: draft.id });
+    expect(await db.select().from(schema.drafts).where(eq(schema.drafts.id, draft.id))).toHaveLength(0);
+  });
+
+  it("publish: posts through the metered client (mock X) and charges credits", async () => {
+    process.env.MOCK_X = "1";
+    try {
+      const p = { ...NO_SCOPES, publish: true };
+      const draft = body(await call("u1", "create_draft", { posts: [{ text: "first" }, { text: "second" }] })).draft;
+      const res = await call("u1", "publish_draft", { draftId: draft.id }, p);
+      expect(res.isError).toBeFalsy();
+      const out = body(res);
+      expect(out.published).toBe(true);
+      expect(out.draft.status).toBe("published");
+      expect(out.draft.posts.every((x: { tweetUrl?: string }) => x.tweetUrl?.startsWith("https://x.com/i/status/"))).toBe(true);
+      expect(await getBalance(db, "u1")).toBe(100 - draft.estimatedCredits);
+      expect((await call("u1", "publish_draft", { draftId: draft.id }, p)).isError).toBe(true); // already published
+
+      // Validation failures (no credits) throw before the claim and leave the draft untouched.
+      const poor = body(await call("u2", "create_draft", { posts: [{ text: "x" }] })).draft;
+      expect(body(await call("u2", "publish_draft", { draftId: poor.id }, p))).toMatchObject({ code: "insufficient_credits" });
+      const [row] = await db.select().from(schema.drafts).where(eq(schema.drafts.id, poor.id));
+      expect(row.status).toBe("draft");
+    } finally {
+      delete process.env.MOCK_X;
+    }
+  });
+});
+
 describe("MCP route", () => {
   const post = (payload: unknown, headers: Record<string, string>) =>
     mcpRoute(new Request(`${ORIGIN}/api/mcp`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(payload) }));
@@ -249,6 +349,23 @@ describe("MCP route", () => {
     expect((await post({ jsonrpc: "2.0", method: "notifications/initialized" }, bearer(token))).status).toBe(202);
     expect((await post({ jsonrpc: "2.0", id: 1, method: "ping" }, { ...bearer(token), origin: "https://evil.example" })).status).toBe(403);
     expect((await post({ jsonrpc: "2.0", id: 1, method: "ping" }, { ...bearer(token), "mcp-protocol-version": "1999-01-01" })).status).toBe(400);
+  });
+
+  it("applies permission changes from the app on the very next request", async () => {
+    const { token, row } = await createApiToken(db, "u1", { name: "a", scopes: { delete: true } });
+    const draft = body(await call("u1", "create_draft", { posts: [{ text: "keep me" }] })).draft;
+    const del = () => post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "delete_draft", arguments: { draftId: draft.id } } }, bearer(token));
+    const listed = async () => ((await (await post({ jsonrpc: "2.0", id: 1, method: "tools/list" }, bearer(token))).json()).result.tools as { name: string }[]).map((t) => t.name);
+
+    expect(await listed()).toContain("delete_draft");
+    await updateApiTokenScopes(db, "u1", row.id, { scopes: { delete: false } }); // the user unticks "Delete"
+    expect(await listed()).not.toContain("delete_draft");
+    const denied = await (await del()).json();
+    expect(JSON.parse(denied.result.content[0].text)).toMatchObject({ code: "permission_denied", permission: "delete" });
+    expect(await db.select().from(schema.drafts).where(eq(schema.drafts.id, draft.id))).toHaveLength(1);
+
+    await updateApiTokenScopes(db, "u1", row.id, { scopes: { delete: true } }); // and ticks it again
+    expect((await (await del()).json()).result.isError).toBeFalsy();
   });
 });
 

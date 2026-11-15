@@ -85,10 +85,11 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 | `errors.ts` | `HttpError` and the typed domain errors, plus `isFatalPublishError`, **`toPublicError`** and **`errorResponse`**. |
 | `http.ts` | `assertSameOrigin`, `assertSameSiteFetch`, `assertJson` and `clientIp`. |
 | `drafts.ts` | Zod input schemas, plus user-scoped CRUD and the `assertReadyToPublish` checks (empty posts, lengths, credits). `serializeDraft` converts dates to ISO strings. |
+| `publish-now.ts` | `publishNow(db, userId, id, getClient?)`: the single publish-now path (app route and agent tool). It validates before the claim, makes a status-guarded claim, posts through the metered client, and marks failures final. |
 | `publisher.ts` | `claimDueDrafts`, `publishDraft`, `markPublished`, `markFailed`, `runDuePublishing` and `publicErrorText`. |
 | `payments/` | **Optional x402 credit purchases** (USDC on Base). `config.ts` validates `PAY_TO_ADDRESS` / `X402_NETWORK` / CDP keys; the feature is off unless they are valid. `x402.ts` builds the resource server and server-side `PaymentRequirements` (facilitator injectable for tests). `cdpJwt.ts` signs CDP API-key JWTs with jose. `purchases.ts` claims a pending row on (network, payer, nonce), then credits in one CTE with a unique `tx_hash`. `reconcile.ts` + `pnpm purchases:reconcile` settle stuck pending rows from chain state. |
 | `api-tokens.ts` | Agent API tokens: `createApiToken` (plaintext returned once), `listApiTokens`, `revokeApiToken`, `resolveApiToken` (hash lookup + `last_used_at` in one UPDATE) and **`requireAgentUserId(db, req)`** (Bearer only; failures rate limited per IP). |
-| `mcp/` | `server.ts`: minimal stateless MCP (initialize, ping, tools/list, tools/call; no SDK dependency). `tools.ts`: the draft-only tool set. Tool errors are `isError` results built from `toPublicError`. |
+| `mcp/` | `server.ts`: minimal stateless MCP (initialize, ping, tools/list, tools/call; no SDK dependency). `tools.ts`: the tool set; drafting is always allowed, and schedule/publish/delete tools need the token's permission (checked on every `tools/call`). Tool errors are `isError` results built from `toPublicError`. |
 | `preview/` | `renderThreadPreview(db, userId, posts, opts)`: satori + resvg PNG of a thread as X shows it (mobile 393 / desktop 600, 2x). `render.tsx` mirrors `components/composer/Preview.tsx`; keep them visually in step. `assets.ts` loads emoji and non-Latin fonts on demand. |
 | `text.ts` | Pure `twitter-text` helpers, safe on both client and server: `countPost`, `overflowIndex`, `tokenize`, `splitIntoThread`, `extractMentions`, `hasUrl`. Long posts (25k) are allowed for `premium` / `blue`. |
 
@@ -261,7 +262,8 @@ Breaking any of these causes double posts, lost money, account takeover or data 
 16. **Agent tokens unlock agent routes only.**
     - `/api/mcp` and `/api/agent/**` authenticate with `requireAgentUserId` (Bearer only, never the cookie), so they skip CSRF checks.
     - Never accept a token on a session route, and never let an agent route fall back to the cookie: that combination reopens CSRF.
-    - Agents stay draft-only: no publish, schedule or delete tools, and `update_draft` passes `["draft"]` to `updateDraft`.
+    - Scheduling, publishing and deleting need the token's `can_schedule` / `can_publish` / `can_delete`, read from the DB on every request (never cached or put in the token). Enforce them in `tools/call`, not only by hiding tools in `tools/list`.
+    - Agent actions reuse the app's code paths: `publishNow` (`src/lib/publish-now.ts`), `updateDraft`, `deleteDraft`. Never add an agent-only publish path. Without `schedule`, `update_draft` passes `["draft"]`.
     - Store only `sha256(token)`; never log tokens.
 17. **Never commit secrets or `.env*` files.** Only `.env.example` is tracked, and it must hold no real values. Never put real tokens, X ids of real users, or the instance URL in code, tests or docs.
 

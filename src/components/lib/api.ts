@@ -65,7 +65,8 @@ export type PurchaseInfo = {
 };
 
 /** A personal API token for agents (MCP). The plaintext is only returned once, by createToken. */
-export type ApiToken = { id: string; name: string; prefix: string; createdAt: string; lastUsedAt: string | null };
+export type TokenScopes = { schedule: boolean; publish: boolean; delete: boolean };
+export type ApiToken = { id: string; name: string; prefix: string; scopes: TokenScopes; createdAt: string; lastUsedAt: string | null };
 
 export type CreditsInfo = { balance: number; isAdmin: boolean; costs: CreditCosts; ledger: LedgerEntry[]; purchase?: PurchaseInfo };
 
@@ -202,7 +203,10 @@ export const api = {
     ),
   getCredits: () => apiFetch<CreditsInfo>("/api/credits"),
   listTokens: () => apiFetch<{ tokens: ApiToken[] }>("/api/tokens"),
-  createToken: (name: string) => apiFetch<{ token: string; apiToken: ApiToken }>("/api/tokens", { method: "POST", json: { name } }),
+  createToken: (name: string, scopes: TokenScopes) =>
+    apiFetch<{ token: string; apiToken: ApiToken }>("/api/tokens", { method: "POST", json: { name, scopes } }),
+  updateTokenScopes: (id: string, scopes: Partial<TokenScopes>) =>
+    apiFetch<{ apiToken: ApiToken }>(`/api/tokens/${encodeURIComponent(id)}`, { method: "PATCH", json: { scopes } }),
   revokeToken: (id: string) => apiFetch<{ ok: true }>(`/api/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
   adminUsers: () => apiFetch<{ users: AdminUser[] }>("/api/admin/users"),
   adminLedger: (userId: string) =>

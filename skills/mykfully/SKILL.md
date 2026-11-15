@@ -5,7 +5,9 @@ description: Draft X (Twitter) posts and threads in a mykfully instance, render 
 
 # mykfully
 
-mykfully is a self-hosted thread composer for X. Its MCP server lets you draft threads for the user, preview them as they will appear on X, and manage credits. **You can only draft.** Scheduling, publishing and deleting happen in the mykfully app, where the user reviews your draft first. Never tell the user a post went out.
+mykfully is a self-hosted thread composer for X. Its MCP server lets you draft threads for the user, preview them as they will appear on X, and manage credits.
+
+**Permissions.** Drafting is always allowed. Scheduling, publishing and deleting are per-token permissions the user grants, and can revoke at any time, under **Connect an agent**. Check `get_account` → `permissions`. Tools you aren't allowed to use are left out of the tool list, and calling one returns `permission_denied`; when that happens, tell the user they can do it in the app or enable it for this token. Permissions can change between calls, so don't assume one that worked earlier still does. Never tell the user a post went out unless `publish_draft` returned `published: true`.
 
 ## Setup (once)
 
@@ -34,9 +36,13 @@ Keep the token secret: anyone holding it can draft as the user and spend USDC on
 |---|---|
 | `get_account` | Get the account name, @username, `maxPostLength` (280, or 25,000 for Premium), the credit balance, costs, and the x402 purchase info. Call it first. |
 | `create_draft` | Save a new single post or thread: `{ posts: [{ text }, …] }`. |
-| `update_draft` | Replace a draft's posts (only drafts with status `draft`). Send the full ordered list, and keep each existing post's `id` to keep its media. |
+| `update_draft` | Replace a thread's posts. Without the schedule permission, only drafts with status `draft`; with it, scheduled and failed threads too. Send the full ordered list, and keep each existing post's `id` to keep its media. |
 | `get_draft` / `list_drafts` | Read drafts, including per-post `length`, `maxLength` and `fits`. |
 | `preview_draft` | Get an image (PNG, or JPEG for photo-heavy threads) of the thread as it will look on X. Pass `draftId`, or pass `posts` for unsaved text. `device` is `mobile` (default) or `desktop`; `theme` is `light` or `dark`; `numbered` adds 1/N labels. Each image shows up to 8 posts, so page with `start` / `nextStart`. |
+| `schedule_draft` *(schedule)* | Schedule a thread for an ISO 8601 time with offset, e.g. `2026-12-01T09:00:00-05:00`. It runs the app's checks: lengths, empty posts, credits. |
+| `unschedule_draft` *(schedule)* | Move a scheduled or failed thread back to drafts. |
+| `publish_draft` *(publish)* | Post a thread to X **now**. Public, irreversible, spends credits. |
+| `delete_draft` *(delete)* | Permanently delete a thread from mykfully. The posts stay on X if it was published. |
 | `get_credits` | Get the balance and recent ledger entries. 1 credit ≈ $0.001 of X API spend. |
 | `buy_credits` | Get the price and the exact x402 request for a credit pack. It does **not** pay. |
 
@@ -49,7 +55,16 @@ Keep the token secret: anyone holding it can draft as the user and spend USDC on
    - Don't add "1/" numbering to the text unless the user asks; `preview_draft` can show it with `numbered: true`.
 3. Call `create_draft` (or `update_draft` while iterating). If any post has `fits: false`, shorten or split it and update.
 4. Call `preview_draft` (mobile unless the user asks for desktop), look at the image, and fix anything that reads badly: awkward line breaks, walls of text, a weak opener. (Link cards aren't rendered; URLs show as shortened blue text.)
-5. Give the user the draft `url` so they can attach media, schedule or publish it in the app.
+5. Give the user the draft `url` so they can attach media, schedule or publish it in the app, unless they asked you to do that and you have the permission (next section).
+
+## Scheduling, publishing, deleting (only if permitted)
+
+- **Schedule:** confirm the exact time and the user's timezone, then call `schedule_draft`. The thread is published automatically at that time. `unschedule_draft` cancels it.
+- **Publish now:** only when the user has explicitly asked you to post this exact thread now. Preview it first and check `estimatedCredits` against the balance.
+  - On success, `published: true` and every post has a `tweetUrl`.
+  - Failures are final; the thread is marked failed and never retried automatically.
+  - On `publish_uncertain`, part of the thread may already be on X. Tell the user to check X before doing anything else, and **never retry it yourself**.
+- **Delete:** confirm first. It can't be undone.
 
 Drafts never spend credits. Publishing does, in the app: about `costs.post` per post, and more with a URL.
 
@@ -82,5 +97,7 @@ Tool errors come back as `isError` results with `{ error, code }`. The common co
 
 - `invalid_request`: fix the arguments using the `issues` list.
 - `rate_limited`: wait `retryAfter` seconds.
-- `error` + "Draft is scheduled and can't be edited": the user must change the draft in the app.
+- `permission_denied`: this token can't do that (see `permission`). The user can do it in the app or allow it under **Connect an agent**.
+- `error` + "Draft is scheduled and can't be edited": you need the schedule permission, or the user changes it in the app.
+- `insufficient_credits` / `credit_cap_reached`: not enough credits to schedule or publish. Offer `buy_credits`, or tell the user.
 - `purchases_disabled`: this instance doesn't sell credits; ask the operator for a grant.
