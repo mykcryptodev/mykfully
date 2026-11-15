@@ -20,7 +20,12 @@ export const env = {
     return process.env.NODE_ENV === "production";
   },
   get appUrl() {
-    return (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
+    if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, "");
+    // Vercel previews: every branch gets its own URL, so one APP_URL can't cover them all.
+    if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_BRANCH_URL) {
+      return `https://${process.env.VERCEL_BRANCH_URL}`;
+    }
+    return "http://localhost:3000";
   },
   get xClientId() {
     return must("X_CLIENT_ID");

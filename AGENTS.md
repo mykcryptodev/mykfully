@@ -357,8 +357,9 @@ export async function POST(req: Request, { params }: Ctx) {
   - **Optional:** `CREDIT_COST_POST`, `CREDIT_COST_POST_WITH_URL` and `CREDIT_COST_USER_READ`.
   - **Never set** `MOCK_X` or `ALLOW_MOCK_LOGIN` on Production.
 - **Preview deployments** run in mock mode, so PRs can be tested without real X OAuth or real posts (the preview URL's callback isn't registered on the X app):
-  - Scope Preview variables to Preview, ideally to the PR's git branch. Don't edit or re-scope Production variables.
-  - Set `MOCK_X=1` and `ALLOW_MOCK_LOGIN=1`, with fresh `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY` and `CRON_SECRET` values (never reuse prod's), and `APP_URL` set to the exact preview URL the browser uses (no trailing slash).
+  - Scope these variables to **Preview, all branches**, so every new PR's preview works without per-branch setup. Don't edit or re-scope Production variables.
+  - Set `MOCK_X=1` and `ALLOW_MOCK_LOGIN=1`, with fresh `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY` and `CRON_SECRET` values (never reuse prod's). A preview without `SESSION_SECRET` (or with one shorter than 32 bytes) answers every page with `500 Server misconfigured` from the middleware.
+  - **Don't set `APP_URL` for Preview.** With it unset, `env.appUrl` falls back to `https://$VERCEL_BRANCH_URL` on previews. Open the preview through its **branch URL** (`<project>-git-<branch>-<team>.vercel.app`); the per-deployment URL fails the origin checks and the login redirect.
   - **Preview must use a non-production `DATABASE_URL`.** Every build runs the migrations against `DATABASE_URL`, and mock login is a full auth bypass.
     - When the Neon integration connects, it scopes its `DATABASE_URL` and `PG*`/`POSTGRES_*` vars to Production, Preview *and* Development. Left that way, every preview build migrates the prod DB.
     - Take Preview off those integration vars, and give Preview its own `DATABASE_URL` that points at a separate database (or a Neon branch). Re-check this if the integration is ever reconnected.
