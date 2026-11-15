@@ -10,6 +10,7 @@ Stack: Next.js 15 App Router (TS, Tailwind v4), Drizzle ORM, Postgres (Neon in p
 | Drafts + scheduler | `src/app/api/drafts/**`, `src/app/api/cron/**`, `src/lib/publisher.ts`, `src/lib/drafts.ts`, `vercel.json`, `src/lib/__tests__/**` |
 | Credits + metering | `src/lib/credits.ts`, `src/lib/errors.ts`, `src/lib/http.ts`, `src/lib/ratelimit.ts` (core); `src/lib/x/metered.ts`, `src/app/api/credits/**`, `src/app/api/admin/**` |
 | Credit purchases (optional, x402) | `src/lib/payments/*`, `src/app/api/credits/purchase/**`, `scripts/reconcile-purchases.ts`, `src/components/credits/{BuyCreditsModal.tsx,payWithWallet.ts}` |
+| Agents (MCP + API tokens) | `src/lib/api-tokens.ts`, `src/lib/mcp/*`, `src/lib/preview/*`, `src/app/api/mcp/**`, `src/app/api/agent/**`, `src/app/api/tokens/**`, `src/components/agents/*`, `skills/mykfully/SKILL.md` |
 | Composer UI | `src/app/(app)/**`, `src/app/layout.tsx`, `src/app/page.tsx`, `src/app/globals.css`, `src/components/**`, `src/lib/text.ts` |
 
 ## Shared function contracts
@@ -40,7 +41,7 @@ Stack: Next.js 15 App Router (TS, Tailwind v4), Drizzle ORM, Postgres (Neon in p
   - `countPost(text): { weighted: number; valid: boolean; max: number }`: uses `twitter-text` `parseTweet`. `max` defaults to 280, or 25000 if the user's `verifiedType` is `blue` and long posts are on.
   - `extractMentions(text): string[]`
 
-## HTTP API (JSON; all require a session except auth + cron)
+## HTTP API (JSON; all require a session except auth, cron and the agent routes)
 Errors are `{ error: string, code: string, ...extra }` (see `errorResponse`). Mutating routes return 403 on a cross-origin `Origin`/`Referer`, and 415 when a body route doesn't send `application/json`.
 - `GET  /api/auth/login`: redirects to X OAuth 2.0 PKCE. In mock mode, it logs in as a fake user directly.
 - `GET  /api/auth/callback`: exchanges the code, upserts `users` and `x_tokens`, sets the session, redirects to `/`.
@@ -82,7 +83,17 @@ Errors are `{ error: string, code: string, ...extra }` (see `errorResponse`). Mu
   - Outcome unknown → **202** `{ pending: true, purchaseId }`; nothing is credited.
   - Authorization already seen → **409** `payment_replayed`. Transaction already credited to another purchase → **409** `payment_not_credited`. Facilitator unreachable before anything was submitted → **502** `facilitator_unavailable`.
   - **This 402 is the one documented exception to `errorResponse`** (it carries the challenge header), and it does *not* mean `insufficient_credits`. The client therefore calls this route with a bare `fetch`, not `apiFetch`.
+- `GET  /api/tokens` → `{ tokens: { id, name, prefix, createdAt, lastUsedAt }[] }` (live tokens only). Session only.
+- `POST /api/tokens` `{ name: 1..60 }` → 201 `{ token, apiToken }`. `token` (`myk_…`) is returned **only here**. Max 20 live tokens per user (403 `token_limit`). Rate limit `tokens` (20/min).
+- `DELETE /api/tokens/:id` → `{ ok: true }`; 404 if it isn't the user's or is already revoked.
 - `GET  /api/cron/publish` (header `Authorization: Bearer $CRON_SECRET`; Vercel Cron sends this) publishes due drafts with each owner's metered client → `{ processed, results: { id, status, error? }[] }`, where `error` uses the `last_error` format.
+
+### Agent API (API token, no session)
+Authenticated with `Authorization: Bearer myk_…` only; cookies are ignored, so there is no Origin/CSRF check. Unknown or revoked tokens → 401, and failures are rate limited per IP (`agentAuthFail`, 20/min).
+- `POST /api/mcp`: a stateless MCP server (Streamable HTTP, JSON responses, no SSE or sessions; `GET`/`DELETE` → 405). Implements `initialize` (protocol versions 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05), `ping`, `tools/list`, `tools/call`. Notifications → 202. Batches are rejected. A present `Origin` must equal `APP_URL` (403); an unsupported `MCP-Protocol-Version` header → 400. 401 responses carry `WWW-Authenticate: Bearer`. Body limit 512 KB. Each `tools/call` counts against `agent` (120/min per user).
+  - Tools (all in `src/lib/mcp/tools.ts`): `get_account`, `list_drafts`, `get_draft`, `create_draft` (also `draftCreate`), `update_draft` (status `draft` only), `preview_draft` (also `preview`, 30/min), `get_credits`, `buy_credits` (returns the purchase request; never pays). There is **no** publish, schedule or delete tool, and no tool calls X.
+  - Tool failures are `isError` results whose text is `{ error, code, ...extra }` from `toPublicError` (validation → `invalid_request` with `issues`).
+- `POST /api/agent/credits/purchase` `{ packId }`: the same x402 exchange as `POST /api/credits/purchase` (shared `handlePurchase` in `src/lib/payments/http.ts`), with this route's URL as the challenge resource.
 
 ### Admin API
 For admins only (`ADMIN_X_USER_IDS`). Everyone else gets **404**, so the surface isn't revealed. Rate limit `admin` (60/min).
@@ -157,6 +168,16 @@ X does not support x402, so this sells the instance's **own** credits for USDC o
 - **Client** (`src/components/credits/`): `BuyCreditsModal` is loaded with `next/dynamic` when first opened; `payWithWallet.ts` dynamically imports `@x402/core`, `@x402/evm` and `viem` when "Pay with wallet" is pressed. It uses `window.ethereum` only, registers a single network, caps spend at $20, and pins payTo, asset, network and the exact price to what `GET /api/credits` returned. After a signed payment has been sent it never signs again; an unknown outcome is shown as pending. Entry points render only when `purchase.enabled`. No CSP change is needed: the page contacts no new host.
 - **The global daily cap applies to spend, not purchases.** Bought credits are still subject to `GLOBAL_DAILY_CREDIT_CAP` when spent; `purchase` rows are not counted as spend.
 - **Refunds are manual:** return the USDC yourself and revoke the credits via the admin API.
+
+## Agents
+- **API tokens** (`src/lib/api-tokens.ts`, table `api_tokens`): `myk_` + 32 random bytes (base64url). Only `sha256(token)` is stored, with a display `prefix`. `resolveApiToken` is one `UPDATE … SET last_used_at … WHERE token_hash = … AND revoked_at IS NULL AND <user exists> RETURNING user_id`. Revocation sets `revoked_at`; rows are kept. Tokens are independent of sessions (logout doesn't revoke them).
+- **Scope:** a token reaches only `/api/mcp` and `/api/agent/**`. Session routes keep using `requireUserId()` (cookie), so a token can't publish, administer, manage tokens or log out.
+- **Draft-only edits:** `updateDraft(…, ["draft"])` uses the status list both for the pre-check and the guarded `UPDATE`, so an agent can't change a thread the user scheduled, even concurrently.
+- **Previews** (`src/lib/preview/`): satori renders `PreviewTree` (a server-side mirror of `components/composer/Preview.tsx`) to SVG, and resvg rasterizes it at 2x. Widths: mobile 393, desktop 600 (PNG 786 / 1200 px wide; height follows content). Up to 8 posts per image (`start` pages). Output budget 2.5 MB (`PREVIEW_MAX_BYTES`): PNG, else JPEG q85, else fewer posts per page.
+  - Fonts: Inter (OFL) vendored in `src/lib/preview/fonts/`, traced into the `/api/mcp` bundle via `outputFileTracingIncludes`. `@resvg/resvg-js` is a native `serverExternalPackages` module; `sharp` (already Next's optional dependency) normalizes media.
+  - Missing glyphs (`preview/assets.ts`): emoji from Twemoji (jsDelivr) and other scripts from Google Fonts Noto subsets, 4s timeout, per-process cache; failures render as missing glyphs, never as an error. **These are outbound requests from the server:** jsDelivr sees which emoji appear, and Google Fonts receives only the sorted set of unique non-Latin characters (`glyphSet`), never the draft text in order.
+  - Avatar fetched server-side only from `pbs.twimg.com`, `abs.twimg.com` or `unavatar.io` (PNG/JPEG ≤ 1 MB), else an initial. Static images and a GIF's first frame come from `loadMedia` (owner-scoped) and are decoded, rotated and scaled to ≤ 1200 px by sharp, then embedded as JPEG (resvg can't decode WebP). MP4 renders as a placeholder; a failed image becomes a placeholder tile.
+- **Skill:** `skills/mykfully/SKILL.md` documents setup, tools, the drafting workflow and the x402 purchase steps for agents.
 
 ## Mock mode
 `MOCK_X=1` means:

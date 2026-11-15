@@ -100,6 +100,33 @@ X's API doesn't accept [x402](https://x402.org) payments, so this doesn't change
 - **Wallets:** only injected browser wallets are supported (no WalletConnect), and only USDC on Base.
 - **Not yet tested with real funds.** The flow is covered by automated tests with a stub facilitator and was checked against the testnet facilitator up to verification; do a testnet purchase yourself before enabling mainnet.
 
+## Agents (MCP)
+
+AI agents can draft for you. mykfully includes a remote [MCP](https://modelcontextprotocol.io) server at `/api/mcp`. Agents can:
+- draft and edit threads;
+- render a PNG preview of how a thread will look on X (mobile by default, or desktop, light or dark);
+- check the credit balance;
+- buy credits with USDC over x402, if purchases are enabled.
+
+**Agents can't schedule, publish or delete.** You review every draft in the app.
+
+1. In the app, open the sidebar, choose **Connect an agent** and create a token. Copy it; it's shown once.
+2. Add the server to your agent. For example, in Claude Code:
+
+   ```bash
+   claude mcp add --transport http mykfully https://<your-host>/api/mcp --header "Authorization: Bearer <token>"
+   ```
+
+3. Give the agent the skill in [`skills/mykfully/SKILL.md`](skills/mykfully/SKILL.md). It covers the workflow, length rules and the x402 purchase steps.
+
+**Tools:** `get_account`, `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `preview_draft`, `get_credits`, `buy_credits`.
+
+**Buying credits:** agents pay over x402 at `POST /api/agent/credits/purchase`. It works like the in-app purchase, but authenticates with the same token. `buy_credits` returns the exact request; any x402 client can send it (for example the Base MCP server's `initiate_x402_request`).
+
+**Tokens:** you can revoke tokens in the same panel. They're stored as SHA-256 hashes, and logging out doesn't revoke them.
+
+**Preview privacy:** to render emoji and non-Latin scripts, the server fetches Twemoji images from jsDelivr and Noto font subsets from Google Fonts. Google receives only the set of unique characters, never the draft text in order. Latin text uses the bundled Inter font and makes no outside request.
+
 ## Quick start (local, no X account needed)
 
 ```bash
@@ -172,6 +199,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - **X tokens:** encrypted with AES-256-GCM, bound to the user id. Refresh is coordinated across serverless instances with a database claim. If X revokes access, the user is asked to reconnect.
 - **Sessions:** signed with HS256 using a secret of at least 32 bytes, and stored in a `__Host-` cookie in production. Sessions can be revoked: logout invalidates every session for that account.
+- **Agent tokens:** API tokens are stored hashed. They are accepted only by the MCP and agent purchase routes, as a bearer header (never a cookie), so they can't publish, administer, or be used for CSRF. Revoke them under **Connect an agent**.
 - **Request checks:** state-changing requests must come from your own `APP_URL` origin (CSRF protection). The credit-spending mention search also rejects cross-site requests (`Sec-Fetch-Site`, falling back to Referer).
 - **Headers:** a strict Content-Security-Policy and other security headers are set.
 - **Error messages:** errors shown to users are sanitized, so database details never leak.

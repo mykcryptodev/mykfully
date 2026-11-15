@@ -196,11 +196,21 @@ export async function createDraft(db: DB, userId: string, input: unknown): Promi
   return row;
 }
 
-export async function updateDraft(db: DB, userId: string, id: string, input: unknown): Promise<DraftRow> {
+/**
+ * `statuses` narrows which statuses may be edited (default: EDITABLE_STATUSES). Agents pass ["draft"] so they can
+ * never change a thread the user has already scheduled; the same list guards the final UPDATE, so it can't race.
+ */
+export async function updateDraft(
+  db: DB,
+  userId: string,
+  id: string,
+  input: unknown,
+  statuses: DraftStatus[] = EDITABLE_STATUSES,
+): Promise<DraftRow> {
   const patch = updateDraftSchema.parse(input);
   const current = await getDraft(db, userId, id);
   if (!current) throw new HttpError(404, "Draft not found");
-  if (!EDITABLE_STATUSES.includes(current.status)) {
+  if (!statuses.includes(current.status)) {
     throw new HttpError(409, `Draft is ${current.status} and can't be edited`);
   }
 
@@ -232,9 +242,9 @@ export async function updateDraft(db: DB, userId: string, id: string, input: unk
   const [row] = await db
     .update(drafts)
     .set(set)
-    .where(and(eq(drafts.id, id), eq(drafts.userId, userId), inArray(drafts.status, EDITABLE_STATUSES)))
+    .where(and(eq(drafts.id, id), eq(drafts.userId, userId), inArray(drafts.status, statuses)))
     .returning();
-  if (!row) throw new HttpError(409, "Draft is being published and can't be edited");
+  if (!row) throw new HttpError(409, "Draft changed status and can't be edited");
   return row;
 }
 

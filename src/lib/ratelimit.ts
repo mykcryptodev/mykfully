@@ -14,6 +14,10 @@ export const LIMITS = {
   mediaStart: { max: 20, windowSec: 60 },
   mediaChunk: { max: 120, windowSec: 60 },
   mediaRead: { max: 180, windowSec: 60 },
+  agent: { max: 120, windowSec: 60 },
+  agentAuthFail: { max: 20, windowSec: 60 },
+  preview: { max: 30, windowSec: 60 },
+  tokens: { max: 20, windowSec: 60 },
 } as const;
 
 /**

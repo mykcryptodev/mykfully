@@ -166,3 +166,19 @@ export const creditPurchases = pgTable(
     index("credit_purchases_user_idx").on(t.userId, t.createdAt),
   ],
 );
+
+// Personal API tokens for agents (MCP + agent HTTP routes). Only a SHA-256 of the token is stored.
+export const apiTokens = pgTable(
+  "api_tokens",
+  {
+    id: text("id").primaryKey(), // uuid
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(), // hex sha256 of the full token
+    prefix: text("prefix").notNull(), // first characters, for display only
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("api_tokens_hash_uq").on(t.tokenHash), index("api_tokens_user_idx").on(t.userId)],
+);
