@@ -59,7 +59,7 @@ Every user spends **credits** whenever mykfully calls a paid X API endpoint on t
 
 ## Optional: sell credits for USDC via x402
 
-X's API doesn't accept [x402](https://x402.org) payments, so this doesn't change how posts are paid for. Instead, an instance can **sell its own credits**: users top up their balance by paying USDC on Base from a browser wallet. It is **off by default** and adds nothing to the page for instances (or users) that never use it: the wallet code is only downloaded when someone presses "Pay with wallet".
+X's API doesn't accept [x402](https://x402.org) payments, so this doesn't change how posts are paid for. Instead, an instance can **sell its own credits**: users top up their balance by paying USDC on Base with Coinbase Wallet (a popup that signs in with a passkey, so nothing to install) or a browser wallet extension. It is **off by default** and adds nothing to the page for instances (or users) that never use it: the wallet code is only downloaded when someone opens **Buy credits**.
 
 | Pack | Price | Credits |
 |---|---|---|
@@ -82,7 +82,7 @@ X's API doesn't accept [x402](https://x402.org) payments, so this doesn't change
 
 1. Set `PAY_TO_ADDRESS=<an address you control>` and `X402_NETWORK=base-sepolia`. Testnet uses the free `https://x402.org/facilitator`, so no keys are needed.
 2. In your wallet (Coinbase Wallet, MetaMask, Rabby…), get Base Sepolia USDC from the [Circle faucet](https://faucet.circle.com). You don't need ETH: the facilitator pays the gas.
-3. Open the credits chip in the sidebar, choose **Buy credits**, pick a pack and confirm the signature request. The app asks the wallet to switch to Base Sepolia.
+3. Open the credits chip in the sidebar, choose **Buy credits** and pick a pack. Either press **Connect Coinbase Wallet**, sign in in the popup, then press **Pay**; or press **Pay with browser wallet** (shown only when an extension is installed). Confirm the signature request. The app asks the wallet to switch to Base Sepolia.
 
 **Going to mainnet:** set `X402_NETWORK=base` and the two CDP keys. Real USDC then moves to `PAY_TO_ADDRESS`. Check Coinbase's facilitator terms and pricing, and your own tax and legal obligations, before selling anything.
 
@@ -99,7 +99,7 @@ X's API doesn't accept [x402](https://x402.org) payments, so this doesn't change
 
   It is manual in v1 (not run by cron) and safe to run repeatedly. The public Base RPC is rate-limited and only serves small log ranges, so on mainnet set `X402_RPC_URL` to an endpoint from an RPC provider. A used authorization whose transaction can't be found, or doesn't pay you the exact amount, is reported as `needs_review` and never credited automatically.
 - **The daily cap is about spending, not buying.** `GLOBAL_DAILY_CREDIT_CAP` still limits how many credits all non-admins can *spend* per 24 hours, including purchased ones. Raise it (or set `0`) if paying users hit it.
-- **Wallets:** only injected browser wallets are supported (no WalletConnect), and only USDC on Base.
+- **Wallets:** Coinbase Wallet's smart wallet (via [`@coinbase/wallet-sdk`](https://github.com/coinbase/coinbase-wallet-sdk), popup on keys.coinbase.com) and injected browser wallets. No WalletConnect or Coinbase mobile-app QR, and only USDC on Base. A smart wallet signs with ERC-1271 (or ERC-6492 if it has never been used on-chain), so the facilitator must accept those signatures.
 - **Not yet tested with real funds.** The flow is covered by automated tests with a stub facilitator and was checked against the testnet facilitator up to verification; do a testnet purchase yourself before enabling mainnet.
 
 ## Agents (MCP)

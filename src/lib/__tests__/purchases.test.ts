@@ -13,6 +13,16 @@ import type { DB } from "@/lib/db";
 
 const state = vi.hoisted(() => ({ db: null as unknown, userId: null as string | null }));
 
+/** Stand-in for @coinbase/wallet-sdk: records how the SDK was configured and forwards requests to a test wallet. */
+type TestWallet = { signed: { primaryType: string; message: Record<string, string> }[]; request(a: { method: string; params?: unknown[] }): Promise<unknown> };
+const coinbaseSdk = vi.hoisted(() => ({ created: [] as unknown[], wallet: null as unknown as TestWallet }));
+vi.mock("@coinbase/wallet-sdk", () => ({
+  createCoinbaseWalletSDK: (params: unknown) => {
+    coinbaseSdk.created.push(params);
+    return { getProvider: () => ({ request: (a: { method: string; params?: unknown[] }) => coinbaseSdk.wallet.request(a) }) };
+  },
+}));
+
 vi.mock("@/lib/db", () => ({ getDb: async () => state.db, schema: {} }));
 vi.mock("@/lib/session", () => ({
   requireUserId: async () => {
@@ -28,7 +38,7 @@ import { getPurchaseConfig } from "@/lib/payments/config";
 import { claimPending, creditPurchase } from "@/lib/payments/purchases";
 import { reconcilePurchases, type ChainReader } from "@/lib/payments/reconcile";
 import { setFacilitatorClient } from "@/lib/payments/x402";
-import { NO_WALLET_MESSAGE, payWithWallet } from "@/components/credits/payWithWallet";
+import { connectWallet, payWithWallet as payWith, type PayStage, type WalletKind } from "@/components/credits/payWithWallet";
 import type { PurchaseInfo } from "@/components/lib/api";
 
 const ORIGIN = "http://localhost:3000";
@@ -452,6 +462,9 @@ describe("payWithWallet (browser client against the real route)", () => {
     return w;
   };
   const info = async (): Promise<PurchaseInfo> => (await (await creditsRoute()).json()).purchase;
+  /** What the modal does: connect the chosen wallet, then pay with it. */
+  const payWithWallet = async (opts: { packId: string; purchase: PurchaseInfo; onStage?: (s: PayStage) => void; kind?: WalletKind }) =>
+    payWith({ ...opts, wallet: await connectWallet(opts.kind ?? "injected", opts.purchase) });
   const g = globalThis as unknown as { window?: unknown; fetch: typeof fetch };
   const realFetch = g.fetch;
 
@@ -467,7 +480,7 @@ describe("payWithWallet (browser client against the real route)", () => {
 
   it("shows a friendly message when no wallet is installed", async () => {
     g.window = {};
-    await expect(payWithWallet({ packId: "p1", purchase: await info() })).rejects.toThrow(NO_WALLET_MESSAGE);
+    await expect(payWithWallet({ packId: "p1", purchase: await info() })).rejects.toThrow(/No browser wallet found/);
     expect(await purchases()).toHaveLength(0);
   });
 
@@ -477,12 +490,22 @@ describe("payWithWallet (browser client against the real route)", () => {
     const stages: string[] = [];
     const res = await payWithWallet({ packId: "p20", purchase: await info(), onStage: (s) => stages.push(s) });
     expect(res).toEqual({ status: "settled", balance: 20100, credits: 20000, txHash: tx(1) });
-    expect(stages).toEqual(["wallet", "quote", "sign", "settle"]);
+    expect(stages).toEqual(["quote", "sign", "settle"]);
     expect(w.chainId).toBe(84532);
     expect(w.signed).toHaveLength(1);
     expect(w.signed[0].primaryType).toBe("TransferWithAuthorization");
     expect(w.signed[0].message).toMatchObject({ to: PAY_TO, value: "20000000" });
     expect(await getBalance(db, "u1")).toBe(20100);
+  });
+
+  it("pays through Coinbase Wallet (smart wallet popup) without any injected wallet", async () => {
+    coinbaseSdk.wallet = makeWallet();
+    g.window = {}; // no extension installed
+    const res = await payWithWallet({ packId: "p1", purchase: await info(), kind: "coinbase" });
+    expect(res).toMatchObject({ status: "settled", credits: 1000 });
+    expect(coinbaseSdk.created).toEqual([{ appName: "mykfully", appChainIds: [84532], preference: { options: "smartWalletOnly" } }]);
+    expect(coinbaseSdk.wallet.signed).toHaveLength(1);
+    expect(coinbaseSdk.wallet.signed[0].message).toMatchObject({ to: PAY_TO, value: "1000000" });
   });
 
   it("reports a cancelled signature as cancelled, with nothing submitted", async () => {

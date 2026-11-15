@@ -4,11 +4,16 @@ import type { ClientEvmSigner } from "@x402/evm";
 import type { PurchaseInfo } from "../lib/api";
 
 /**
- * Pay for a credit pack with the browser's injected wallet (MetaMask, Coinbase Wallet, Rabby…) over x402.
+ * Pay for a credit pack over x402 with either
+ * - Coinbase Wallet (`@coinbase/wallet-sdk`, smart wallet only): a keys.coinbase.com popup secured by a passkey,
+ *   so no extension or app is needed, or
+ * - the browser's injected wallet (MetaMask, Coinbase Wallet extension, Rabby…) via `window.ethereum`.
  *
- * Loaded only when the user presses "Pay with wallet"; the x402 + viem libraries are imported dynamically
- * inside, so none of this is in the app's initial bundle. It talks to the wallet via `window.ethereum` only
- * (no RPC or third-party host is contacted from the page, so the CSP's `connect-src 'self'` is unchanged).
+ * Loaded when the Buy credits dialog opens; the SDK, x402 and viem libraries are imported dynamically inside.
+ * The page itself still only fetches same-origin (CSP `connect-src 'self'` is unchanged): the Coinbase popup is a
+ * separate window that talks to the page over postMessage, and every request we make through it (accounts,
+ * chain id, switch chain, typed-data signature) is answered locally or by the popup, never by an RPC host.
+ * Opening the popup does share the page URL and app name with keys.coinbase.com.
  *
  * Uses a bare fetch on purpose: `apiFetch` treats 402 as "insufficient credits", but here 402 is the x402 challenge.
  */
@@ -31,9 +36,42 @@ export class WalletPayError extends Error {
   }
 }
 
-export const NO_WALLET_MESSAGE = "Install a wallet like Coinbase Wallet or MetaMask, with USDC on Base";
+export type WalletKind = "coinbase" | "injected";
 
 type Eip1193 = { request(args: { method: string; params?: unknown[] }): Promise<unknown> };
+
+/** A wallet that is connected and on the purchase network. */
+export type ConnectedWallet = { eth: Eip1193; address: `0x${string}` };
+
+const injected = () => (typeof window === "undefined" ? undefined : (window as unknown as { ethereum?: Eip1193 }).ethereum);
+
+export const hasInjectedWallet = () => typeof injected()?.request === "function";
+
+/** One SDK provider per chain for the page's lifetime; it remembers the session, so reconnecting needs no popup. */
+const coinbaseProviders = new Map<number, Promise<Eip1193>>();
+
+function coinbaseProvider(chainId: number): Promise<Eip1193> {
+  let p = coinbaseProviders.get(chainId);
+  if (!p) {
+    p = import("@coinbase/wallet-sdk").then(({ createCoinbaseWalletSDK }) =>
+      createCoinbaseWalletSDK({
+        appName: "mykfully",
+        appChainIds: [chainId],
+        // Smart wallet only: the popup flow. "all" would add the mobile-app QR path, which needs a WebSocket the CSP blocks.
+        preference: { options: "smartWalletOnly" },
+      }).getProvider(),
+    );
+    coinbaseProviders.set(chainId, p);
+    p.catch(() => coinbaseProviders.delete(chainId));
+  }
+  return p;
+}
+
+/** Fetch the wallet code ahead of the click, so the first popup opens while the click still counts as a user action. */
+export function preloadWallet(chainId: number | null): void {
+  if (chainId != null && CHAINS[chainId]) void coinbaseProvider(chainId).catch(() => {});
+  void Promise.all([import("@x402/core/client"), import("@x402/evm/exact/client"), import("viem")]).catch(() => {});
+}
 
 /** Parameters wallets need to add the chain if they don't know it (the page never calls these RPC URLs itself). */
 const CHAINS: Record<number, { chainName: string; rpcUrls: string[]; blockExplorerUrls: string[] }> = {
@@ -50,6 +88,7 @@ const REASONS: Record<string, string> = {
   insufficient_funds: "Your wallet doesn’t have enough USDC on this network.",
   invalid_exact_evm_insufficient_balance: "Your wallet doesn’t have enough USDC on this network.",
   invalid_exact_evm_payload_signature: "The wallet’s signature wasn’t accepted. Try again.",
+  eip6492_factory_not_allowed: "This wallet hasn’t been used on-chain yet and can’t pay here. Try a browser wallet.",
 };
 
 const rpcCode = (e: unknown) => (e && typeof e === "object" ? (e as { code?: unknown }).code : undefined);
@@ -94,37 +133,52 @@ async function switchChain(eth: Eip1193, chainId: number): Promise<void> {
   }
 }
 
-export async function payWithWallet(opts: { packId: string; purchase: PurchaseInfo; onStage?: (s: PayStage) => void }): Promise<PayResult> {
-  const { packId, purchase, onStage } = opts;
+/** Map anything thrown by the wallet into a WalletPayError. Only used where nothing can have been charged. */
+function toPayError(e: unknown): WalletPayError {
+  if (e instanceof WalletPayError) return e;
+  if (isUserRejection(e)) return new WalletPayError("Cancelled in the wallet. Nothing was charged.", "cancelled");
+  return new WalletPayError("The wallet couldn’t complete the request. Nothing was charged.");
+}
+
+/** Connect the chosen wallet and put it on Base / Base Sepolia. For Coinbase Wallet this opens the sign-in popup. */
+export async function connectWallet(kind: WalletKind, purchase: PurchaseInfo): Promise<ConnectedWallet> {
+  const chainId = purchase.chainId;
+  if (!purchase.enabled || !chainId || !CHAINS[chainId]) throw new WalletPayError("Buying credits isn’t available on this instance.");
+  try {
+    const eth = kind === "coinbase" ? await coinbaseProvider(chainId) : injected();
+    if (!eth?.request) throw new WalletPayError("No browser wallet found. Use Coinbase Wallet instead.", "no_wallet");
+    const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
+    if (!accounts?.[0]) throw new WalletPayError("No wallet account is connected.");
+    await switchChain(eth, chainId);
+    const { getAddress } = await import("viem");
+    return { eth, address: getAddress(accounts[0]) };
+  } catch (e) {
+    throw toPayError(e);
+  }
+}
+
+export async function payWithWallet(opts: { packId: string; purchase: PurchaseInfo; wallet: ConnectedWallet; onStage?: (s: PayStage) => void }): Promise<PayResult> {
+  const { packId, purchase, wallet, onStage } = opts;
   const pack = purchase.packs.find((p) => p.id === packId);
   if (!purchase.enabled || !pack || !purchase.chainId || !purchase.payTo || !purchase.asset || !CHAINS[purchase.chainId]) {
     throw new WalletPayError("Buying credits isn’t available on this instance.");
   }
-  const eth = (window as unknown as { ethereum?: Eip1193 }).ethereum;
-  if (!eth?.request) throw new WalletPayError(NO_WALLET_MESSAGE, "no_wallet");
-
+  const { eth, address } = wallet;
   const network = `eip155:${purchase.chainId}` as const;
   const expectedAmount = String(pack.usd * 1_000_000); // USDC has 6 decimals
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
   try {
-    // 1. Connect the wallet and put it on Base / Base Sepolia.
-    onStage?.("wallet");
-    const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
-    if (!accounts?.[0]) throw new WalletPayError("No wallet account is connected.");
-    await switchChain(eth, purchase.chainId);
-
-    // 2. Ask our server for the x402 challenge (expects 402).
+    // 1. Ask our server for the x402 challenge (expects 402).
     onStage?.("quote");
     const first = await post(packId);
     if (first.status !== 402) throw await errorFrom(first);
 
-    const [{ x402Client, x402HTTPClient }, { ExactEvmScheme }, { createWalletClient, custom, getAddress }] = await Promise.all([
+    const [{ x402Client, x402HTTPClient }, { ExactEvmScheme }, { createWalletClient, custom }] = await Promise.all([
       import("@x402/core/client"),
       import("@x402/evm/exact/client"),
       import("viem"),
     ]);
-    const address = getAddress(accounts[0]);
     const walletClient = createWalletClient({ account: address, transport: custom(eth) });
     const signer: ClientEvmSigner = {
       address,
@@ -152,7 +206,7 @@ export async function payWithWallet(opts: { packId: string; purchase: PurchaseIn
     );
     const paymentRequired = client.getPaymentRequiredResponse((name) => first.headers.get(name), await first.json().catch(() => undefined));
 
-    // 3. The wallet shows a typed-data signature request (a USDC transfer authorization; no gas needed).
+    // 2. The wallet shows a typed-data signature request (a USDC transfer authorization; no gas needed).
     onStage?.("sign");
     let headers: Record<string, string>;
     try {
@@ -162,7 +216,7 @@ export async function payWithWallet(opts: { packId: string; purchase: PurchaseIn
       throw new WalletPayError("The payment request didn’t match this pack, so nothing was signed. Reload and try again.");
     }
 
-    // 4. Send the signed payment. From here on the outcome may be unknown — never sign a second time.
+    // 3. Send the signed payment. From here on the outcome may be unknown — never sign a second time.
     onStage?.("settle");
     try {
       const paid = await post(packId, headers);
@@ -182,8 +236,6 @@ export async function payWithWallet(opts: { packId: string; purchase: PurchaseIn
       return { status: "pending" }; // network error / unreadable response: outcome unknown
     }
   } catch (e) {
-    if (e instanceof WalletPayError) throw e;
-    if (isUserRejection(e)) throw new WalletPayError("Cancelled in the wallet. Nothing was charged.", "cancelled");
-    throw new WalletPayError("The wallet couldn’t complete the request. Nothing was charged.");
+    throw toPayError(e);
   }
 }
