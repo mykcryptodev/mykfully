@@ -37,6 +37,10 @@ export default function PrivacyPage() {
           <li>IP addresses, briefly, for rate limiting.</li>
         </ul>
         <p className="mt-3 text-muted">We don&apos;t sell your data, run ads or use third-party trackers.</p>
+        <p className="mt-3 text-muted">
+          If you pay with Coinbase Wallet, its sign-in window on keys.coinbase.com receives this page&apos;s address and the app name, and
+          Coinbase&apos;s own privacy policy applies there.
+        </p>
 
         <h2 className="mt-10 text-xl font-semibold">Leaving</h2>
         <p className="mt-3 text-muted">

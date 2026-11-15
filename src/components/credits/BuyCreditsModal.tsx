@@ -1,19 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatCredits, type PurchaseInfo } from "../lib/api";
 import { IconAlert, IconCheckCircle, IconClock, IconExternal } from "../ui/icons";
 import { Modal } from "../ui/Modal";
 import { Spinner } from "../ui/Spinner";
+import type { ConnectedWallet, WalletKind } from "./payWithWallet";
 
 /**
- * Buy a credit pack with USDC (x402). Loaded with next/dynamic only when opened, and the wallet code
- * (payWithWallet → x402 + viem) only when "Pay with wallet" is pressed.
+ * Buy a credit pack with USDC (x402). Loaded with next/dynamic only when opened; the wallet code
+ * (payWithWallet → Coinbase Wallet SDK, x402, viem) is preloaded when it opens.
+ *
+ * Coinbase Wallet takes two clicks: "Connect" opens the sign-in popup, then "Pay" opens the signature popup.
+ * Each popup gets its own click because browsers block a second popup opened without one. An injected
+ * (extension) wallet doesn't need popups, so it connects and pays in one click.
  */
 
 type Phase =
   | { name: "pick"; error?: string }
-  | { name: "busy"; stage: string }
+  | { name: "busy"; stage: string; kind: WalletKind }
   | { name: "done"; credits: number; txUrl: string | null }
   | { name: "pending" };
 
@@ -27,23 +32,59 @@ const STAGE_TEXT: Record<string, string> = {
 export function BuyCreditsModal({ purchase, onClose, onPurchased }: { purchase: PurchaseInfo; onClose: () => void; onPurchased: () => void }) {
   const [packId, setPackId] = useState(purchase.packs[Math.min(1, purchase.packs.length - 1)]?.id ?? "");
   const [phase, setPhase] = useState<Phase>({ name: "pick" });
+  /** The connected Coinbase Wallet, once the user has signed in through its popup. */
+  const [coinbase, setCoinbase] = useState<ConnectedWallet | null>(null);
+  const [hasInjected, setHasInjected] = useState(false);
   const busy = phase.name === "busy";
   const testnet = purchase.network !== "base";
   const networkName = testnet ? "Base Sepolia (testnet)" : "Base";
+  const pack = purchase.packs.find((p) => p.id === packId);
 
-  const pay = async () => {
+  useEffect(() => {
+    void import("./payWithWallet").then((m) => {
+      m.preloadWallet(purchase.chainId);
+      setHasInjected(m.hasInjectedWallet());
+    });
+  }, [purchase.chainId]);
+
+  const fail = (e: unknown) =>
+    setPhase({ name: "pick", error: e instanceof Error && e.name === "WalletPayError" ? e.message : "Something went wrong. Nothing was charged." });
+
+  const connectCoinbase = async () => {
     if (busy) return;
-    setPhase({ name: "busy", stage: STAGE_TEXT.wallet });
+    setPhase({ name: "busy", stage: "Sign in to Coinbase Wallet in the popup…", kind: "coinbase" });
     try {
-      const { payWithWallet, explorerTxUrl } = await import("./payWithWallet");
-      const res = await payWithWallet({ packId, purchase, onStage: (s) => setPhase({ name: "busy", stage: STAGE_TEXT[s] }) });
+      const { connectWallet } = await import("./payWithWallet");
+      setCoinbase(await connectWallet("coinbase", purchase));
+      setPhase({ name: "pick" });
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  const pay = async (kind: WalletKind) => {
+    if (busy) return;
+    setPhase({ name: "busy", stage: STAGE_TEXT.wallet, kind });
+    try {
+      const { connectWallet, payWithWallet, explorerTxUrl } = await import("./payWithWallet");
+      const wallet = kind === "coinbase" && coinbase ? coinbase : await connectWallet(kind, purchase);
+      const res = await payWithWallet({ packId, purchase, wallet, onStage: (s) => setPhase({ name: "busy", stage: STAGE_TEXT[s], kind }) });
       if (res.status === "settled") setPhase({ name: "done", credits: res.credits, txUrl: explorerTxUrl(purchase.chainId, res.txHash) });
       else setPhase({ name: "pending" });
       onPurchased();
     } catch (e) {
-      setPhase({ name: "pick", error: e instanceof Error && e.name === "WalletPayError" ? e.message : "Something went wrong. Nothing was charged." });
+      fail(e);
     }
   };
+
+  const spinner = (kind: WalletKind, label: string) =>
+    busy && phase.kind === kind ? (
+      <>
+        <Spinner size={16} /> {phase.stage}
+      </>
+    ) : (
+      label
+    );
 
   return (
     <Modal open onClose={busy ? () => {} : onClose} labelledBy="buy-credits-title" className="max-w-[380px] p-6">
@@ -115,17 +156,25 @@ export function BuyCreditsModal({ purchase, onClose, onPurchased }: { purchase: 
             <button
               data-autofocus
               disabled={busy || !packId}
-              onClick={pay}
+              onClick={coinbase ? () => pay("coinbase") : connectCoinbase}
               className="flex h-11 items-center justify-center gap-2 rounded-full bg-accent text-[15px] font-bold text-white transition-colors hover:bg-accent-hover disabled:opacity-70"
             >
-              {busy ? (
-                <>
-                  <Spinner size={16} /> {phase.stage}
-                </>
-              ) : (
-                "Pay with wallet"
-              )}
+              {spinner("coinbase", coinbase ? `Pay $${pack?.usd ?? ""} with Coinbase Wallet` : "Connect Coinbase Wallet")}
             </button>
+            {coinbase && !busy && (
+              <p className="-mt-1 text-center text-[12px] leading-4 text-faint">
+                Connected {coinbase.address.slice(0, 6)}…{coinbase.address.slice(-4)}
+              </p>
+            )}
+            {hasInjected && (
+              <button
+                disabled={busy || !packId}
+                onClick={() => pay("injected")}
+                className="flex h-11 items-center justify-center gap-2 rounded-full border border-line-strong text-[15px] font-bold text-ink transition-colors hover:bg-hover disabled:opacity-60"
+              >
+                {spinner("injected", "Pay with browser wallet")}
+              </button>
+            )}
             <button
               disabled={busy}
               onClick={onClose}
@@ -135,8 +184,8 @@ export function BuyCreditsModal({ purchase, onClose, onPurchased }: { purchase: 
             </button>
           </div>
           <p className="mt-3 text-[12px] leading-4 text-faint">
-            You’ll sign a USDC transfer authorization in your wallet — no gas needed. Works with browser wallets such as Coinbase Wallet,
-            MetaMask or Rabby.
+            You’ll sign a USDC transfer authorization — no gas needed. Coinbase Wallet opens in a popup and signs in with a passkey, so
+            there’s nothing to install. Browser wallets such as MetaMask or Rabby work too.
           </p>
         </>
       )}
