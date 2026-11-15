@@ -96,6 +96,20 @@ body {
   tab-size: 4;
 }
 
+/*
+ * iOS Safari zooms the page into any focused field whose font-size is under 16px. On touch devices,
+ * keep text fields at 16px. .tweet-text covers the composer textarea and its mirror together, so the caret
+ * stays aligned. Unlayered, so it beats Tailwind's text-sm/text-xs utilities.
+ */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select,
+  .tweet-text {
+    font-size: 16px;
+  }
+}
+
 .composer-input {
   color: transparent;
   caret-color: var(--ink);
