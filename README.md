@@ -108,7 +108,7 @@ AI agents can draft for you. mykfully includes a remote [MCP](https://modelconte
 - check the credit balance;
 - buy credits with USDC over x402, if purchases are enabled.
 
-**You choose what each agent can do.** Drafting and previews are always allowed. **Schedule**, **Publish now** and **Delete** are checkboxes on each token, all off by default. You can change them at any time in **Connect an agent**. Turning a permission off applies to the agent's next request; a token without a permission doesn't see those tools, and calls to them are refused. MCP clients cache the tool list, so after turning a permission **on**, the agent may need to reconnect to see the new tools.
+**You choose what each agent can do.** Drafting and previews are always allowed. **Schedule**, **Publish** and **Delete** are checkboxes on each token, all off by default. You can change them at any time in **Connect an agent**. Turning a permission off applies to the agent's next request; a token without a permission doesn't see those tools, and calls to them are refused. MCP clients cache the tool list, so after turning a permission **on**, the agent may need to reconnect to see the new tools.
 
 1. In the app, open the sidebar, choose **Connect an agent** and create a token. Copy it; it's shown once.
 2. Add the server to your agent. For example, in Claude Code:

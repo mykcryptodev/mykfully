@@ -61,7 +61,7 @@ Keep the token secret: anyone holding it can draft as the user and spend USDC on
 
 - **Schedule:** confirm the exact time and the user's timezone, then call `schedule_draft`. The thread is published automatically at that time. `unschedule_draft` cancels it.
 - **Never retry a thread whose last publish was uncertain.** `publish_uncertain_review` means part of it may already be on X; the user must check X and handle it in the app.
-- **Publish now:** only when the user has explicitly asked you to post this exact thread now. Preview it first and check `estimatedCredits` against the balance.
+- **Publish:** only when the user has explicitly asked you to post this exact thread now. Preview it first and check `estimatedCredits` against the balance.
   - On success, `published: true` and every post has a `tweetUrl`.
   - Failures are final; the thread is marked failed and never retried automatically.
   - On `publish_uncertain`, part of the thread may already be on X. Tell the user to check X before doing anything else, and **never retry it yourself**.

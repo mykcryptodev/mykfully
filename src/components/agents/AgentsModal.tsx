@@ -40,7 +40,7 @@ const NO_SCOPES: TokenScopes = { schedule: false, publish: false, delete: false 
 
 const PERMISSIONS: { key: keyof TokenScopes; label: string; hint: string; danger?: boolean }[] = [
   { key: "schedule", label: "Schedule", hint: "Schedule and unschedule threads, and edit scheduled ones." },
-  { key: "publish", label: "Publish now", hint: "Post to X immediately. Public, can’t be undone, spends credits.", danger: true },
+  { key: "publish", label: "Publish", hint: "Post to X without scheduling. Posting can’t be undone and spends credits.", danger: true },
   { key: "delete", label: "Delete", hint: "Permanently delete threads from mykfully.", danger: true },
 ];
 
