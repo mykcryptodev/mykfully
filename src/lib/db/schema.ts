@@ -166,3 +166,24 @@ export const creditPurchases = pgTable(
     index("credit_purchases_user_idx").on(t.userId, t.createdAt),
   ],
 );
+
+// Personal API tokens for agents (MCP + agent HTTP routes). Only a SHA-256 of the token is stored.
+// Drafting is always allowed; scheduling, publishing and deleting are per-token opt-ins.
+export const apiTokens = pgTable(
+  "api_tokens",
+  {
+    id: text("id").primaryKey(), // uuid
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(), // hex sha256 of the full token
+    prefix: text("prefix").notNull(), // first characters, for display only
+    // Opt-in permissions beyond drafting, read on every request (changing them applies immediately).
+    canSchedule: boolean("can_schedule").default(false).notNull(),
+    canPublish: boolean("can_publish").default(false).notNull(), // posts to X now and spends credits
+    canDelete: boolean("can_delete").default(false).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("api_tokens_hash_uq").on(t.tokenHash), index("api_tokens_user_idx").on(t.userId)],
+);

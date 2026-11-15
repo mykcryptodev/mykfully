@@ -23,7 +23,9 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["@electric-sql/pglite"],
+  serverExternalPackages: ["@electric-sql/pglite", "@resvg/resvg-js"],
+  // The X preview renderer (src/lib/preview) reads its vendored Inter fonts at runtime.
+  outputFileTracingIncludes: { "/api/mcp": ["./src/lib/preview/fonts/*.woff"] },
   poweredByHeader: false,
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];

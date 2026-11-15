@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { api, type Draft } from "../lib/api";
@@ -11,6 +12,7 @@ import { ConfirmDialog } from "../ui/Modal";
 import { CreditsChip } from "../credits/CreditsChip";
 import {
   IconAlert,
+  IconBot,
   IconCheckCircle,
   IconClock,
   IconDoc,
@@ -21,6 +23,9 @@ import {
   IconTrash,
   IconX,
 } from "../ui/icons";
+
+// Loaded on first open, like BuyCreditsModal.
+const AgentsModal = dynamic(() => import("../agents/AgentsModal").then((m) => m.AgentsModal), { ssr: false });
 
 export const DRAFT_DELETED_EVENT = "mykfully:draft-deleted";
 
@@ -55,6 +60,7 @@ export function Sidebar() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [timezones, setTimezones] = useState<string[]>([]);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const tz = me?.timezone ?? "UTC";
 
   useEffect(() => setTimezones(listTimezones()), []);
@@ -259,6 +265,15 @@ export function Sidebar() {
         <div className="border-t-[0.5px] border-line-strong p-3">
           <CreditsChip />
           {me && (
+            <button
+              onClick={() => setAgentsOpen(true)}
+              className="mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-ink hover:bg-hover"
+            >
+              <IconBot size={14} className="text-muted" />
+              Connect an agent
+            </button>
+          )}
+          {me && (
             <label className="mb-2 flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted hover:bg-hover">
               <IconGlobe size={14} />
               <span className="sr-only">Timezone</span>
@@ -297,6 +312,8 @@ export function Sidebar() {
           </div>
         </div>
       </aside>
+
+      {agentsOpen && <AgentsModal open={agentsOpen} onClose={() => setAgentsOpen(false)} />}
 
       <ConfirmDialog
         open={!!pendingDelete}

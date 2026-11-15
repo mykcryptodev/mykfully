@@ -48,12 +48,16 @@ src/
       drafts/route.ts, drafts/[id]/route.ts, drafts/[id]/publish/route.ts
       mentions/search/route.ts   Paid GET (credit-spending) mention search
       credits/route.ts        Balance, costs, last 50 ledger rows
+      mcp/route.ts            Agent MCP server (Bearer API token; stateless JSON-RPC)
+      agent/credits/purchase/route.ts   Agent x402 purchase (Bearer API token)
+      tokens/route.ts, tokens/[id]/route.ts   Session-only API token create/list/revoke
       cron/publish/route.ts   Bearer CRON_SECRET; runs runDuePublishing
       admin/_lib.ts           requireAdmin (404 for non-admins), serializeLedger, listUsersWithSpend
       admin/{users,users/[id]/ledger,credits}/route.ts
   lib/                     Server-side domain logic (route handlers stay thin)
     __tests__/             vitest suites + auth-helpers.ts
   components/              Client UI (see §9)
+skills/mykfully/SKILL.md   Agent skill: MCP setup, drafting workflow, x402 purchase
 drizzle/                   Generated SQL migrations + meta/ (journal, snapshots)
 scripts/migrate.mjs        Neon migrations, run by `pnpm build`
 docs/ARCHITECTURE.md       API contracts and invariants
@@ -67,7 +71,7 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 | Module | Responsibility |
 |---|---|
 | `env.ts` | The central place for reading `process.env`, plus `intEnv`. A few files read it directly: `middleware.ts` (Edge), `db/index.ts` (`PGLITE_DIR`), `x/mock.ts` (`MOCK_X_FAIL_AFTER`) and `next.config.ts`. Getters are lazy, so a missing var throws on first use, not at import. `mockX` is forced off when `VERCEL_ENV=production`. `allowMockLogin` exists for `pnpm start` smoke tests. |
-| `db/schema.ts` | Drizzle tables: `users`, `x_tokens`, `drafts` (posts are `jsonb` `ThreadPost[]`), `mention_cache`, `credit_ledger`, `rate_limits`, `credit_purchases` (x402). |
+| `db/schema.ts` | Drizzle tables: `users`, `x_tokens`, `drafts` (posts are `jsonb` `ThreadPost[]`), `mention_cache`, `credit_ledger`, `rate_limits`, `credit_purchases` (x402), `api_tokens` (agent tokens, hashed). |
 | `db/index.ts` | `getDb()`: Neon when `DATABASE_URL` is set, otherwise PGlite in `PGLITE_DIR` (default `./.data/pglite`), migrated on startup. The promise is cached on `globalThis.__mykDb`, so a failed init stays failed until the process restarts. |
 | `session.ts` | `getSession` / `requireUserId` / `setSession` / `clearSession` / `revokeSessions`. Sessions are HS256 JWTs with a `ver` claim that must match `users.session_version`. The cookie is `__Host-myk_session` in prod and `myk_session` in dev. They last 14 days. |
 | `crypto.ts` | AES-256-GCM `encrypt(plaintext, aad)` / `decrypt`. Format `v2:` uses AAD = userId; `v1:` is legacy and read-only. |
@@ -81,8 +85,12 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 | `errors.ts` | `HttpError` and the typed domain errors, plus `isFatalPublishError`, **`toPublicError`** and **`errorResponse`**. |
 | `http.ts` | `assertSameOrigin`, `assertSameSiteFetch`, `assertJson` and `clientIp`. |
 | `drafts.ts` | Zod input schemas, plus user-scoped CRUD and the `assertReadyToPublish` checks (empty posts, lengths, credits). `serializeDraft` converts dates to ISO strings. |
+| `publish-now.ts` | `publishNow(db, userId, id, getClient?)`: the single publish-now path (app route and agent tool). It validates before the claim, makes a status-guarded claim, posts through the metered client, and marks failures final. |
 | `publisher.ts` | `claimDueDrafts`, `publishDraft`, `markPublished`, `markFailed`, `runDuePublishing` and `publicErrorText`. |
 | `payments/` | **Optional x402 credit purchases** (USDC on Base). `config.ts` validates `PAY_TO_ADDRESS` / `X402_NETWORK` / CDP keys; the feature is off unless they are valid. `x402.ts` builds the resource server and server-side `PaymentRequirements` (facilitator injectable for tests). `cdpJwt.ts` signs CDP API-key JWTs with jose. `purchases.ts` claims a pending row on (network, payer, nonce), then credits in one CTE with a unique `tx_hash`. `reconcile.ts` + `pnpm purchases:reconcile` settle stuck pending rows from chain state. |
+| `api-tokens.ts` | Agent API tokens: `createApiToken` (plaintext returned once), `listApiTokens`, `revokeApiToken`, `resolveApiToken` (hash lookup + `last_used_at` in one UPDATE) and **`requireAgentUserId(db, req)`** (Bearer only; failures rate limited per IP). |
+| `mcp/` | `server.ts`: minimal stateless MCP (initialize, ping, tools/list, tools/call; no SDK dependency). `tools.ts`: the tool set; drafting is always allowed, and schedule/publish/delete tools need the token's permission (checked on every `tools/call`). Tool errors are `isError` results built from `toPublicError`. |
+| `preview/` | `renderThreadPreview(db, userId, posts, opts)`: satori + resvg PNG of a thread as X shows it (mobile 393 / desktop 600, 2x). `render.tsx` mirrors `components/composer/Preview.tsx`; keep them visually in step. `assets.ts` loads emoji and non-Latin fonts on demand. |
 | `text.ts` | Pure `twitter-text` helpers, safe on both client and server: `countPost`, `overflowIndex`, `tokenize`, `splitIntoThread`, `extractMentions`, `hasUrl`. Long posts (25k) are allowed for `premium` / `blue`. |
 
 ## 4. Setup and commands
@@ -90,7 +98,7 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 **Use pnpm only.** Never use npm or yarn, and never commit a `package-lock.json` or `yarn.lock`.
 
 - `pnpm-workspace.yaml` sets **`minimumReleaseAge: 1440`**: a package version must be at least 24 hours old before it can be installed. **Never bypass or lower this.** No `--config.minimumReleaseAge=0`, no editing the file, no switching package managers. If a fresh version is required, wait or pin an older one.
-- `overrides: postcss: ">=8.5.23"` is a security pin, which keeps `pnpm audit` clean. Keep it.
+- `overrides: postcss: ">=8.5.23"` and `fflate: ">=0.7.5 <0.8.0"` (via satori) are security pins, which keep `pnpm audit` free of runtime advisories. Keep them.
 - `packageManager` is `pnpm@10.25.0`.
 
 | Command | What it does |
@@ -100,7 +108,7 @@ pnpm-workspace.yaml        minimumReleaseAge + postcss override
 | `pnpm dev:local` / `dev:preview` / `dev:prod` | Runs `next dev` against an explicit database. See "Choosing a database" below. |
 | `pnpm typecheck` | Runs `tsc --noEmit`. |
 | `pnpm lint` | Runs ESLint (`next/core-web-vitals` and `next/typescript`). |
-| `pnpm test` | Runs `vitest run`: 10 files and about 94 tests, about 10 seconds. |
+| `pnpm test` | Runs `vitest run`: 12 files and about 142 tests, about 13 seconds. |
 | `pnpm build` | Runs `node scripts/migrate.mjs && next build`. **Unset `DATABASE_URL` locally** unless you really mean to migrate that database. |
 | `pnpm db:generate` | Runs `drizzle-kit generate` from `schema.ts` into `drizzle/`. No DB is needed. |
 | `pnpm db:migrate` | Runs `drizzle-kit migrate` against `DATABASE_URL`. Rarely needed, since the build and startup already migrate. |
@@ -251,7 +259,14 @@ Breaking any of these causes double posts, lost money, account takeover or data 
     - `UNIQUE(network, payer, nonce)` and `UNIQUE(tx_hash)` prevent replays and double credits.
     - The 402 challenge is a documented exception to `errorResponse`. The client calls it with raw `fetch`, because `apiFetch` treats every 402 as insufficient credits.
     - Wallet code (viem, `@x402/*`) must stay in lazy chunks (`next/dynamic` / dynamic `import()`), so users who never pay download none of it.
-16. **Never commit secrets or `.env*` files.** Only `.env.example` is tracked, and it must hold no real values. Never put real tokens, X ids of real users, or the instance URL in code, tests or docs.
+16. **Agent tokens unlock agent routes only.**
+    - `/api/mcp` and `/api/agent/**` authenticate with `requireAgentUserId` (Bearer only, never the cookie), so they skip CSRF checks.
+    - Never accept a token on a session route, and never let an agent route fall back to the cookie: that combination reopens CSRF.
+    - Scheduling, publishing and deleting need the token's `can_schedule` / `can_publish` / `can_delete`, read from the DB on every request (never cached or put in the token). Enforce them in `tools/call`, not only by hiding tools in `tools/list`.
+    - Agent actions reuse the app's code paths: `publishNow` (`src/lib/publish-now.ts`), `updateDraft`, `deleteDraft`. Never add an agent-only publish path. Without `schedule`, `update_draft` passes `["draft"]`.
+    - Agents must never re-run a `publish_uncertain` thread (`assertNotUncertain` in `mcp/tools.ts`); that retry is the user's, after checking X.
+    - Store only `sha256(token)`; never log tokens.
+17. **Never commit secrets or `.env*` files.** Only `.env.example` is tracked, and it must hold no real values. Never put real tokens, X ids of real users, or the instance URL in code, tests or docs.
 
 ## 8. Recipes
 
@@ -320,7 +335,7 @@ export async function POST(req: Request, { params }: Ctx) {
   - Dark mode comes from `prefers-color-scheme` only; there is no toggle.
   - **Don't hardcode colors**; add a token in both themes instead.
   - Fonts: `font-sans`, and `font-tweet` for post text.
-- **Components** (`src/components/`): `app/` (AppProvider, AppShell), `composer/`, `sidebar/`, `credits/` (CreditsChip, LedgerList), `admin/`, `ui/` (Avatar, Modal, Spinner, VerifiedBadge, `icons.tsx` with inline SVG icons) and `lib/` (`api.ts`, `time.ts`). Most are client components (`"use client"`).
+- **Components** (`src/components/`): `agents/` (AgentsModal: tokens + MCP setup, lazy-loaded from the sidebar), `app/` (AppProvider, AppShell), `composer/`, `sidebar/`, `credits/` (CreditsChip, LedgerList), `admin/`, `ui/` (Avatar, Modal, Spinner, VerifiedBadge, `icons.tsx` with inline SVG icons) and `lib/` (`api.ts`, `time.ts`). Most are client components (`"use client"`).
 - **Client API layer:** `src/components/lib/api.ts`.
   - **Always go through `api.*` / `apiFetch`**, never a bare `fetch`. The only exception is logout.
   - `apiFetch` sets JSON headers and `credentials`. It redirects to `/login` on a 401 and throws `ApiError(status, message, code, extra)`.
